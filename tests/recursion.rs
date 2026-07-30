@@ -1,6 +1,6 @@
 mod support;
 
-use rmdb_prof_mcp::query::{self, FrameSelector};
+use prof_mcp::query::{self, FrameSelector};
 
 #[test]
 fn diamond_and_shared_callee_use_each_stack_once() {

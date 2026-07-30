@@ -1,6 +1,6 @@
 mod support;
 
-use rmdb_prof_mcp::profile::Profile;
+use prof_mcp::profile::Profile;
 
 fn assert_invariants(profile: &Profile) {
     assert_eq!(profile.root().total_weight, profile.total_weight);

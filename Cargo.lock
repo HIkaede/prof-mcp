@@ -610,6 +610,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "prof-mcp"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "assert_matches",
+ "blake3",
+ "clap",
+ "hashbrown 0.15.5",
+ "lru",
+ "regex",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -708,28 +730,6 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "rmdb-prof-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_matches",
- "blake3",
- "clap",
- "hashbrown 0.15.5",
- "lru",
- "regex",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

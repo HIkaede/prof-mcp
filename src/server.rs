@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use crate::{
-    cache::ProfileCache,
+    cache::{LoadedProfile, ProfileCache},
     config::Config,
     error::ApiError,
-    query::{self, DiffSort, FrameSelector, MatchMode, TopSort},
+    query::{self, DiffSort, FrameSelector, FrameWindow, MatchMode, TopSort},
 };
 
 pub struct ProfileServer {
@@ -29,9 +29,23 @@ pub struct ProfileServer {
 
 impl ProfileServer {
     pub fn new(config: Config) -> Result<Self, ApiError> {
+        let workspace = std::env::current_dir().map_err(|error| {
+            ApiError::new(
+                "internal_error",
+                format!("Could not determine current directory: {error}"),
+                json!({}),
+                "Start prof-mcp from an accessible workspace directory.",
+            )
+        })?;
+        Self::new_in_workspace(config, workspace)
+    }
+    pub fn new_in_workspace(
+        config: Config,
+        workspace: std::path::PathBuf,
+    ) -> Result<Self, ApiError> {
         let max_file_size = config.max_file_size_bytes();
         let cache = Arc::new(ProfileCache::new(
-            config.root,
+            workspace,
             max_file_size,
             config.cache_capacity,
         )?);
@@ -40,7 +54,7 @@ impl ProfileServer {
             tool_router: Self::tool_router(),
         })
     }
-    async fn profile(&self, reference: &str) -> Result<Arc<crate::profile::Profile>, ApiError> {
+    async fn profile(&self, reference: Option<&str>) -> Result<LoadedProfile, ApiError> {
         self.cache.load(reference).await
     }
 }
@@ -112,12 +126,14 @@ impl From<FrameSelectorInput> for FrameSelector {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileInput {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindInput {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     pub query: String,
     #[serde(default = "default_contains")]
     #[schemars(with = "FindModeSchema")]
@@ -129,7 +145,8 @@ pub struct FindInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TopInput {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default = "default_self")]
     #[schemars(with = "MetricSchema")]
     pub sort: String,
@@ -142,7 +159,8 @@ pub struct TopInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TreeInput {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default)]
     pub root_node_id: u32,
     pub profile_fingerprint: Option<String>,
@@ -159,7 +177,8 @@ pub struct TreeInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DirectionInput {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     pub frame: FrameSelectorInput,
     #[serde(default = "default_direction_depth")]
     #[schemars(range(min = 0, max = 16))]
@@ -174,11 +193,42 @@ pub struct DirectionInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PathsInput {
-    pub profile: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     pub through: FrameSelectorInput,
     #[serde(default = "default_paths_limit")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: usize,
+    pub frame_window: Option<FrameWindowInput>,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FrameWindowInput {
+    Head {
+        #[schemars(range(min = 1, max = 4096))]
+        lines: usize,
+    },
+    Tail {
+        #[schemars(range(min = 1, max = 4096))]
+        lines: usize,
+    },
+    AroundTarget {
+        #[schemars(range(min = 0, max = 4096))]
+        before: usize,
+        #[schemars(range(min = 0, max = 4096))]
+        after: usize,
+    },
+}
+impl From<FrameWindowInput> for FrameWindow {
+    fn from(value: FrameWindowInput) -> Self {
+        match value {
+            FrameWindowInput::Head { lines } => Self::Head { lines },
+            FrameWindowInput::Tail { lines } => Self::Tail { lines },
+            FrameWindowInput::AroundTarget { before, after } => {
+                Self::AroundTarget { before, after }
+            }
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -233,11 +283,11 @@ fn default_diff_limit() -> usize {
 fn output_schema(required: &[&str], scope_weight: Value) -> Arc<serde_json::Map<String, Value>> {
     let profile = serde_json::json!({
         "type":"object",
-        "properties":{"canonical_path":{"type":"string"},"fingerprint":{"type":"string"},"byte_len":{"type":"integer"},"modified_unix_ms":{"type":["integer","null"]}},
-        "required":["canonical_path","fingerprint","byte_len","modified_unix_ms"]
+        "properties":{"canonical_path":{"type":"string"},"fingerprint":{"type":"string"},"byte_len":{"type":"integer"},"modified_unix_ms":{"type":["integer","null"]},"alias":{"type":"string"}},
+        "required":["canonical_path","fingerprint","byte_len","modified_unix_ms","alias"]
     });
     let properties = serde_json::json!({
-        "schema_version":{"type":"string"},
+        "schema_version":{"type":"string","const":"2"},
         "profile":profile.clone(),
         "baseline":profile.clone(),
         "candidate":profile,
@@ -294,9 +344,9 @@ fn diff_output_schema() -> Arc<serde_json::Map<String, Value>> {
 impl ProfileServer {
     #[tool(description = "Summarize a folded stack profile.", output_schema = single_output_schema())]
     async fn profile_summary(&self, Parameters(input): Parameters<ProfileInput>) -> CallToolResult {
-        match self.profile(&input.profile).await {
-            Ok(profile) => success(
-                query::summary(&profile),
+        match self.profile(input.profile.as_deref()).await {
+            Ok(loaded) => success(
+                tag_alias(query::summary(&loaded.profile), &loaded.alias),
                 "Profile summary returned; next use profile_top or profile_find_symbols.",
             ),
             Err(error) => failure(error),
@@ -307,14 +357,18 @@ impl ProfileServer {
         &self,
         Parameters(input): Parameters<FindInput>,
     ) -> CallToolResult {
-        match self.profile(&input.profile).await.and_then(|profile| {
-            query::find_symbols(
-                &profile,
-                &input.query,
-                parse_match(&input.mode)?,
-                input.limit,
-            )
-        }) {
+        match self
+            .profile(input.profile.as_deref())
+            .await
+            .and_then(|loaded| {
+                query::find_symbols(
+                    &loaded.profile,
+                    &input.query,
+                    parse_match(&input.mode)?,
+                    input.limit,
+                )
+                .map(|value| tag_alias(value, &loaded.alias))
+            }) {
             Ok(value) => success(
                 value,
                 "Symbol matches returned; use a frame_id in a focused query.",
@@ -325,15 +379,19 @@ impl ProfileServer {
     #[tool(description = "Rank self or inclusive folded-frame weights.", output_schema = single_output_schema())]
     async fn profile_top(&self, Parameters(input): Parameters<TopInput>) -> CallToolResult {
         let focus = input.focus.map(FrameSelector::from);
-        match self.profile(&input.profile).await.and_then(|profile| {
-            query::top(
-                &profile,
-                parse_metric(&input.sort)?,
-                input.limit,
-                focus.as_ref(),
-                input.name_regex.as_deref(),
-            )
-        }) {
+        match self
+            .profile(input.profile.as_deref())
+            .await
+            .and_then(|loaded| {
+                query::top(
+                    &loaded.profile,
+                    parse_metric(&input.sort)?,
+                    input.limit,
+                    focus.as_ref(),
+                    input.name_regex.as_deref(),
+                )
+                .map(|value| tag_alias(value, &loaded.alias))
+            }) {
             Ok(value) => success(
                 value,
                 "Ranked frames returned; use profile_tree, callers, or callees for context.",
@@ -343,16 +401,20 @@ impl ProfileServer {
     }
     #[tool(description = "Expand one deterministic top-down CCT node.", output_schema = single_output_schema())]
     async fn profile_tree(&self, Parameters(input): Parameters<TreeInput>) -> CallToolResult {
-        match self.profile(&input.profile).await.and_then(|profile| {
-            query::tree(
-                &profile,
-                input.root_node_id,
-                input.profile_fingerprint.as_deref(),
-                input.max_depth,
-                input.max_nodes,
-                input.min_scope_percent,
-            )
-        }) {
+        match self
+            .profile(input.profile.as_deref())
+            .await
+            .and_then(|loaded| {
+                query::tree(
+                    &loaded.profile,
+                    input.root_node_id,
+                    input.profile_fingerprint.as_deref(),
+                    input.max_depth,
+                    input.max_nodes,
+                    input.min_scope_percent,
+                )
+                .map(|value| tag_alias(value, &loaded.alias))
+            }) {
             Ok(value) => success(
                 value,
                 "Tree page returned; pass its fingerprint for any non-root continuation.",
@@ -366,15 +428,19 @@ impl ProfileServer {
         Parameters(input): Parameters<DirectionInput>,
     ) -> CallToolResult {
         let frame = FrameSelector::from(input.frame);
-        match self.profile(&input.profile).await.and_then(|profile| {
-            query::callers(
-                &profile,
-                &frame,
-                input.max_depth,
-                input.max_nodes,
-                input.min_scope_percent,
-            )
-        }) {
+        match self
+            .profile(input.profile.as_deref())
+            .await
+            .and_then(|loaded| {
+                query::callers(
+                    &loaded.profile,
+                    &frame,
+                    input.max_depth,
+                    input.max_nodes,
+                    input.min_scope_percent,
+                )
+                .map(|value| tag_alias(value, &loaded.alias))
+            }) {
             Ok(value) => success(
                 value,
                 "Caller tree returned; use profile_paths for complete contributing stacks.",
@@ -388,15 +454,19 @@ impl ProfileServer {
         Parameters(input): Parameters<DirectionInput>,
     ) -> CallToolResult {
         let frame = FrameSelector::from(input.frame);
-        match self.profile(&input.profile).await.and_then(|profile| {
-            query::callees(
-                &profile,
-                &frame,
-                input.max_depth,
-                input.max_nodes,
-                input.min_scope_percent,
-            )
-        }) {
+        match self
+            .profile(input.profile.as_deref())
+            .await
+            .and_then(|loaded| {
+                query::callees(
+                    &loaded.profile,
+                    &frame,
+                    input.max_depth,
+                    input.max_nodes,
+                    input.min_scope_percent,
+                )
+                .map(|value| tag_alias(value, &loaded.alias))
+            }) {
             Ok(value) => success(
                 value,
                 "Callee tree returned; use profile_paths for complete contributing stacks.",
@@ -407,11 +477,14 @@ impl ProfileServer {
     #[tool(description = "Return heavy complete stacks through one exact frame.", output_schema = single_output_schema())]
     async fn profile_paths(&self, Parameters(input): Parameters<PathsInput>) -> CallToolResult {
         let through = FrameSelector::from(input.through);
+        let frame_window = input.frame_window.map(FrameWindow::from);
         match self
-            .profile(&input.profile)
+            .profile(input.profile.as_deref())
             .await
-            .and_then(|profile| query::paths(&profile, &through, input.limit))
-        {
+            .and_then(|loaded| {
+                query::paths_with_window(&loaded.profile, &through, input.limit, frame_window)
+                    .map(|value| tag_alias(value, &loaded.alias))
+            }) {
             Ok(value) => success(
                 value,
                 "Heavy paths returned; inspect target_positions for recursive occurrences.",
@@ -422,16 +495,17 @@ impl ProfileServer {
     #[tool(description = "Compare exact frame names between two folded profiles.", output_schema = diff_output_schema())]
     async fn profile_diff(&self, Parameters(input): Parameters<DiffInput>) -> CallToolResult {
         match async {
-            let baseline = self.profile(&input.baseline).await?;
-            let candidate = self.profile(&input.candidate).await?;
+            let baseline = self.profile(Some(&input.baseline)).await?;
+            let candidate = self.profile(Some(&input.candidate)).await?;
             query::diff(
-                &baseline,
-                &candidate,
+                &baseline.profile,
+                &candidate.profile,
                 parse_metric(&input.metric)?,
                 parse_diff_sort(&input.sort)?,
                 input.limit,
                 input.name_regex.as_deref(),
             )
+            .map(|value| tag_diff_aliases(value, &baseline.alias, &candidate.alias))
         }
         .await
         {
@@ -573,6 +647,21 @@ fn success(value: Value, text: &str) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
     result.content = vec![ContentBlock::text(format!("truncated={truncated}; {text}"))];
     result
+}
+fn tag_alias(mut value: Value, alias: &str) -> Value {
+    if let Some(profile) = value.get_mut("profile").and_then(Value::as_object_mut) {
+        profile.insert("alias".into(), Value::String(alias.into()));
+    }
+    value
+}
+fn tag_diff_aliases(mut value: Value, baseline: &str, candidate: &str) -> Value {
+    if let Some(profile) = value.get_mut("baseline").and_then(Value::as_object_mut) {
+        profile.insert("alias".into(), Value::String(baseline.into()));
+    }
+    if let Some(profile) = value.get_mut("candidate").and_then(Value::as_object_mut) {
+        profile.insert("alias".into(), Value::String(candidate.into()));
+    }
+    value
 }
 fn failure(error: ApiError) -> CallToolResult {
     let mut result=CallToolResult::structured_error(serde_json::to_value(&error).unwrap_or_else(|_| json!({"code":"internal_error","message":"Could not serialize error","details":null,"retry_hint":"Retry."})));

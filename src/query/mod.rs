@@ -35,6 +35,13 @@ pub enum MatchMode {
     Regex,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameWindow {
+    Head { lines: usize },
+    Tail { lines: usize },
+    AroundTarget { before: usize, after: usize },
+}
+
 pub fn summary(profile: &Profile) -> Value {
     let mut ids: Vec<_> = (0..profile.frames.len() as u32).collect();
     ids.sort_by(|a, b| frame_order(profile, *a, *b, TopSort::SelfWeight));
@@ -326,7 +333,17 @@ fn directional(
 }
 
 pub fn paths(profile: &Profile, selector: &FrameSelector, limit: usize) -> Result<Value, ApiError> {
+    paths_with_window(profile, selector, limit, None)
+}
+
+pub fn paths_with_window(
+    profile: &Profile,
+    selector: &FrameSelector,
+    limit: usize,
+    window: Option<FrameWindow>,
+) -> Result<Value, ApiError> {
     check_limit(limit, 1, 50, "limit")?;
+    check_frame_window(window)?;
     let frame = resolve_selector(profile, selector)?;
     let stack_ids = &profile.frame_to_stacks[frame as usize];
     let scope: u64 = stack_ids
@@ -342,9 +359,35 @@ pub fn paths(profile: &Profile, selector: &FrameSelector, limit: usize) -> Resul
             frame_sequence(profile, &a.frames).cmp(&frame_sequence(profile, &b.frames))
         })
     });
-    let truncated = stacks.len() > limit;
+    let mut truncated = stacks.len() > limit;
     stacks.truncate(limit);
-    let rows: Vec<_> = stacks.into_iter().map(|stack| { let positions: Vec<_> = stack.frames.iter().enumerate().filter_map(|(i,id)| (*id == frame).then_some(i)).collect(); json!({"frames":frame_sequence(profile,&stack.frames),"weight":stack.weight,"profile_percent":percent(stack.weight,profile.total_weight),"scope_percent":percent(stack.weight,scope),"target_positions":positions}) }).collect();
+    let rows: Vec<_> = stacks
+        .into_iter()
+        .map(|stack| {
+            let positions: Vec<_> = stack
+                .frames
+                .iter()
+                .enumerate()
+                .filter_map(|(index, id)| (*id == frame).then_some(index))
+                .collect();
+            let total_depth = stack.frames.len();
+            let (frame_start, frame_end) = frame_window_range(total_depth, &positions, window);
+            let cropped = frame_start != 0 || frame_end != total_depth;
+            truncated |= cropped;
+            json!({
+                "frames":frame_sequence(profile,&stack.frames[frame_start..frame_end]),
+                "weight":stack.weight,
+                "profile_percent":percent(stack.weight,profile.total_weight),
+                "scope_percent":percent(stack.weight,scope),
+                "target_positions":positions,
+                "total_depth":total_depth,
+                "frame_start":frame_start,
+                "frame_end":frame_end,
+                "omitted_before":frame_start,
+                "omitted_after":total_depth-frame_end,
+            })
+        })
+        .collect();
     Ok(envelope(
         profile,
         scope,
@@ -352,6 +395,46 @@ pub fn paths(profile: &Profile, selector: &FrameSelector, limit: usize) -> Resul
         Vec::new(),
         json!({"through":frame,"paths":rows}),
     ))
+}
+
+fn check_frame_window(window: Option<FrameWindow>) -> Result<(), ApiError> {
+    match window {
+        None => Ok(()),
+        Some(FrameWindow::Head { lines }) | Some(FrameWindow::Tail { lines }) => {
+            check_limit(lines, 1, 4096, "frame_window.lines")
+        }
+        Some(FrameWindow::AroundTarget { before, after }) => {
+            if before > 4096 || after > 4096 || (before == 0 && after == 0) {
+                return Err(ApiError::new(
+                    "invalid_budget",
+                    "frame_window around_target requires before/after <= 4096 and at least one non-zero value",
+                    json!({"before":before,"after":after}),
+                    "Use a bounded non-empty display window.",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn frame_window_range(
+    total_depth: usize,
+    positions: &[usize],
+    window: Option<FrameWindow>,
+) -> (usize, usize) {
+    match window {
+        None => (0, total_depth),
+        Some(FrameWindow::Head { lines }) => (0, lines.min(total_depth)),
+        Some(FrameWindow::Tail { lines }) => (total_depth.saturating_sub(lines), total_depth),
+        Some(FrameWindow::AroundTarget { before, after }) => {
+            let first = *positions.first().expect("selected frame occurs in stack");
+            let last = *positions.last().expect("selected frame occurs in stack");
+            (
+                first.saturating_sub(before),
+                (last.saturating_add(after).saturating_add(1)).min(total_depth),
+            )
+        }
+    }
 }
 
 pub fn diff(

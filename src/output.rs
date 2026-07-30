@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use crate::profile::{FrameId, FrameStats, Profile};
 
-pub const SCHEMA_VERSION: &str = "1";
+pub const SCHEMA_VERSION: &str = "2";
 
 pub fn percent(weight: u64, scope: u64) -> f64 {
     if scope == 0 {
@@ -15,7 +15,7 @@ pub fn percent(weight: u64, scope: u64) -> f64 {
 
 pub fn profile_meta(profile: &Profile) -> Value {
     json!({
-        "canonical_path": profile.source.canonical_path,
+        "canonical_path": profile.source.canonical_path.display().to_string(),
         "fingerprint": profile.source.fingerprint,
         "byte_len": profile.source.byte_len,
         "modified_unix_ms": profile.source.modified_unix_ms,

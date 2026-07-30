@@ -1,17 +1,17 @@
 [package]
-name = "rmdb-prof-mcp"
-version = "0.1.0"
+name = "prof-mcp"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Read-only MCP queries for folded stack profiles"
 license = "MIT"
 
 [lib]
-name = "rmdb_prof_mcp"
+name = "prof_mcp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rmdb-prof-mcp"
+name = "prof-mcp"
 path = "src/main.rs"
 
 [dependencies]

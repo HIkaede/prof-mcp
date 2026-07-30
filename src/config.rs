@@ -1,16 +1,17 @@
-use std::path::PathBuf;
-
 use clap::Parser;
 
 #[derive(Clone, Debug, Parser)]
 #[command(
-    name = "rmdb-prof-mcp",
-    about = "Read-only folded stack profile MCP server"
+    name = "prof-mcp",
+    about = "Register folded stack profiles or serve read-only MCP queries"
 )]
 pub struct Config {
-    /// One or more roots that profile paths must stay within.
-    #[arg(long, required = true, value_name = "PATH")]
-    pub root: Vec<PathBuf>,
+    /// Folded profile to register. Without it prof-mcp serves MCP over stdio.
+    #[arg(value_name = "PROFILE")]
+    pub profile: Option<std::path::PathBuf>,
+    /// Alias to register for PROFILE.
+    #[arg(long, value_name = "ALIAS", requires = "profile")]
+    pub name: Option<String>,
     /// Maximum accepted profile file size in MiB.
     #[arg(long, default_value_t = 512)]
     pub max_file_size_mib: u64,

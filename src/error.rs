@@ -63,14 +63,14 @@ impl From<ProfileError> for ApiError {
                 ApiError::new(
                     "profile_not_found",
                     format!("Profile does not exist: {}", path.display()),
-                    serde_json::json!({"profile": path}),
-                    "Check the path relative to the configured root.",
+                    serde_json::json!({"profile": path.display().to_string()}),
+                    "Check the profile path and retry.",
                 )
             }
             ProfileError::Io { path, .. } => ApiError::new(
                 "internal_error",
                 format!("Could not read profile: {}", path.display()),
-                serde_json::json!({"profile": path}),
+                serde_json::json!({"profile": path.display().to_string()}),
                 "Check file permissions and retry.",
             ),
         }

@@ -2,7 +2,7 @@
 
 use std::{io::Cursor, path::PathBuf};
 
-use rmdb_prof_mcp::profile::{BuildLimits, Profile, ProfileBuilder};
+use prof_mcp::profile::{BuildLimits, Profile, ProfileBuilder};
 
 pub fn profile(input: &str) -> Profile {
     ProfileBuilder::new(BuildLimits::default())

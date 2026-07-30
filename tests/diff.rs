@@ -1,6 +1,6 @@
 mod support;
 
-use rmdb_prof_mcp::query::{self, DiffSort, TopSort};
+use prof_mcp::query::{self, DiffSort, TopSort};
 
 #[test]
 fn diff_joins_exact_names_across_different_frame_ids_and_sorts() {

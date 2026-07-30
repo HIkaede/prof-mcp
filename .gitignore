@@ -1,6 +1,7 @@
 /target/
 /dist/
 /.codegraph/
+/.prof-mcp/
 *.log
 *.tmp
 *.swp
