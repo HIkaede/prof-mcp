@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rmdb-prof-mcp": {
+      "command": "./target/debug/rmdb-prof-mcp",
+      "args": ["--root", "."]
+    }
+  }
+}

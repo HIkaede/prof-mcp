@@ -1,0 +1,14 @@
+/target/
+/dist/
+/.codegraph/
+*.log
+*.tmp
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+/acceptance-local/
+/perf.data*
+/perf.folded
+/perf.svg
