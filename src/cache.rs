@@ -121,4 +121,8 @@ impl ProfileCache {
             profile,
         })
     }
+
+    pub fn workspace(&self) -> &std::path::Path {
+        &self.workspace
+    }
 }

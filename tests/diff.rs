@@ -46,6 +46,17 @@ fn diff_joins_exact_names_across_different_frame_ids_and_sorts() {
         .unwrap();
     assert_eq!(shared["baseline_weight"], 90);
     assert_eq!(shared["candidate_weight"], 80);
+    let limited = query::diff(
+        &baseline,
+        &candidate,
+        TopSort::SelfWeight,
+        DiffSort::Regression,
+        1,
+        None,
+    )
+    .unwrap();
+    assert_eq!(limited["truncation_reasons"][0]["kind"], "row_limit");
+    assert_eq!(limited["truncation_reasons"][0]["available"], 4);
 }
 
 #[test]

@@ -25,11 +25,19 @@ pub fn profile_meta(profile: &Profile) -> Value {
 pub fn envelope(
     profile: &Profile,
     scope_weight: u64,
-    truncated: bool,
+    truncation_reasons: Vec<Value>,
     warnings: Vec<String>,
     data: Value,
 ) -> Value {
-    json!({"schema_version":SCHEMA_VERSION,"profile":profile_meta(profile),"scope_weight":scope_weight,"truncated":truncated,"warnings":warnings,"data":data})
+    json!({
+        "schema_version":SCHEMA_VERSION,
+        "profile":profile_meta(profile),
+        "scope_weight":scope_weight,
+        "truncated":!truncation_reasons.is_empty(),
+        "truncation_reasons":truncation_reasons,
+        "warnings":warnings,
+        "data":data
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]

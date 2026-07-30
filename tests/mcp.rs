@@ -79,6 +79,12 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
     );
     assert_eq!(summary_schema["properties"]["schema_version"]["const"], "2");
     assert!(
+        summary_schema["anyOf"][0]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("truncation_reasons"))
+    );
+    assert!(
         summary_schema["anyOf"][1]["required"]
             .as_array()
             .unwrap()
@@ -93,6 +99,30 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
             .unwrap()
             .contains(&serde_json::json!("regex"))
     );
+    for tool_index in [2, 4, 5, 6] {
+        let selector =
+            &tools.tools[tool_index].input_schema["$defs"]["FrameSelectorInput"]["oneOf"];
+        assert!(
+            selector.is_array(),
+            "{}",
+            serde_json::to_string_pretty(&tools.tools[tool_index].input_schema).unwrap()
+        );
+        assert_eq!(selector.as_array().unwrap().len(), 2);
+        assert!(
+            selector[0]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("frame_id"))
+        );
+        assert!(
+            selector[1]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("frame_name"))
+        );
+        assert_eq!(selector[0]["additionalProperties"], false);
+        assert_eq!(selector[1]["additionalProperties"], false);
+    }
     let paths_schema = &tools.tools[6].input_schema["$defs"]["FrameWindowInput"]["oneOf"];
     assert_eq!(paths_schema[0]["properties"]["lines"]["minimum"], 1);
     assert_eq!(paths_schema[0]["properties"]["lines"]["maximum"], 4096);
@@ -116,11 +146,11 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
         "2"
     );
     assert!(
-        !result.content[0]
+        result.content[0]
             .as_text()
             .unwrap()
             .text
-            .contains("top_self")
+            .contains("top_self=[")
     );
     assert!(
         result.content[0]
@@ -128,6 +158,12 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
             .unwrap()
             .text
             .contains("truncated=false")
+    );
+    let summary = result.structured_content.as_ref().unwrap();
+    assert_eq!(summary["data"]["registry"]["active"], "sample");
+    assert_eq!(
+        summary["data"]["registry"]["profiles"][0]["alias"],
+        "sample"
     );
     for (name, arguments) in [
         (
@@ -207,6 +243,11 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
         windowed["data"]["paths"][0]["target_positions"],
         serde_json::json!([1])
     );
+    assert_eq!(
+        windowed["data"]["paths"][0]["display_target_positions"],
+        serde_json::json!([0])
+    );
+    assert_eq!(windowed["truncation_reasons"][0]["kind"], "frame_window");
     assert_eq!(windowed["data"]["paths"][0]["frame_start"], 1);
     assert_eq!(windowed["data"]["paths"][0]["frame_end"], 2);
     assert_eq!(windowed["data"]["paths"][0]["omitted_before"], 1);

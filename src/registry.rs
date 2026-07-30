@@ -20,6 +20,13 @@ pub const REGISTRY_DIR: &str = ".prof-mcp";
 const MANIFEST: &str = "manifest.json";
 const PROFILES_DIR: &str = "profiles";
 const LOCK: &str = ".register.lock";
+const IGNORE: &str = ".gitignore";
+const IGNORE_CONTENT: &str = "\
+# prof-mcp data files are local to this workspace.
+# Keep this file visible so the registry directory can be intentionally ignored.
+*
+!.gitignore
+";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +59,23 @@ pub struct ResolvedProfile {
     pub fingerprint: String,
     pub path: PathBuf,
     pub byte_len: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RegistryStatus {
+    #[serde(serialize_with = "serialize_path")]
+    pub registry_root: PathBuf,
+    pub active: String,
+    pub profiles: Vec<RegistryProfile>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RegistryProfile {
+    pub alias: String,
+    pub fingerprint: String,
+    pub source_name: String,
+    pub byte_len: u64,
+    pub registered_unix_ms: u64,
 }
 
 pub fn valid_alias(alias: &str) -> bool {
@@ -230,7 +254,7 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
             "workspace_not_registered",
             "No .prof-mcp registry was found for this workspace",
             json!({"cwd":path_text(workspace)}),
-            "Run prof-mcp PATH from workspace root.",
+            "Run prof-mcp register PATH from workspace root.",
         )
     })?;
     let manifest = read_manifest_required(&state)?;
@@ -244,7 +268,7 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
             "profile_alias_not_found",
             format!("No registered profile alias: {alias}"),
             json!({"profile":alias,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
-            "Register it with prof-mcp PATH --name ALIAS, or use an existing alias.",
+            "Register it with prof-mcp register PATH --name ALIAS, or use an existing alias.",
         )
     })?;
     ensure_profiles_dir(&state)?;
@@ -272,17 +296,94 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
     })
 }
 
+pub fn status(workspace: &Path) -> Result<RegistryStatus, ApiError> {
+    let state = discover(workspace)?.ok_or_else(|| {
+        ApiError::new(
+            "workspace_not_registered",
+            "No .prof-mcp registry was found for this workspace",
+            json!({"cwd":path_text(workspace)}),
+            "Run prof-mcp register PATH from workspace root.",
+        )
+    })?;
+    let manifest = read_manifest_required(&state)?;
+    validate_manifest(&manifest)?;
+    let profiles = manifest
+        .profiles
+        .iter()
+        .map(|(alias, profile)| RegistryProfile {
+            alias: alias.clone(),
+            fingerprint: profile.fingerprint.clone(),
+            source_name: profile.source_name.clone(),
+            byte_len: profile.byte_len,
+            registered_unix_ms: profile.registered_unix_ms,
+        })
+        .collect();
+    Ok(RegistryStatus {
+        registry_root: state,
+        active: manifest.active,
+        profiles,
+    })
+}
+
+pub fn set_active(workspace: &Path, alias: &str) -> Result<RegistryStatus, ApiError> {
+    if !valid_alias(alias) {
+        return Err(invalid_alias(alias));
+    }
+    let state = discover(workspace)?.ok_or_else(|| {
+        ApiError::new(
+            "workspace_not_registered",
+            "No .prof-mcp registry was found for this workspace",
+            json!({"cwd":path_text(workspace)}),
+            "Run prof-mcp register PATH from workspace root.",
+        )
+    })?;
+    ensure_registry_layout(&state)?;
+    let _lock = RegistrationLock::acquire(&state)?;
+    let mut manifest = read_manifest_required(&state)?;
+    validate_manifest(&manifest)?;
+    if !manifest.profiles.contains_key(alias) {
+        return Err(ApiError::new(
+            "profile_alias_not_found",
+            format!("No registered profile alias: {alias}"),
+            json!({"profile":alias,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+            "Run prof-mcp list and select an existing alias.",
+        ));
+    }
+    manifest.active = alias.to_owned();
+    atomic_write_json(&state.join(MANIFEST), &manifest)?;
+    drop(_lock);
+    status(workspace)
+}
+
 fn profile_file(fingerprint: &str) -> String {
     format!("{PROFILES_DIR}/{fingerprint}.folded")
 }
 
 fn ensure_registry_layout(state: &Path) -> Result<(), ApiError> {
     ensure_real_directory(state, true, "Workspace .prof-mcp path")?;
-    ensure_profiles_dir(state)
+    ensure_profiles_dir(state)?;
+    ensure_ignore_file(state)
 }
 
 fn ensure_profiles_dir(state: &Path) -> Result<(), ApiError> {
     ensure_real_directory(&state.join(PROFILES_DIR), true, "Registry profiles path")
+}
+
+fn ensure_ignore_file(state: &Path) -> Result<(), ApiError> {
+    let path = state.join(IGNORE);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            atomic_write_bytes(&path, IGNORE_CONTENT.as_bytes())
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_file() => {
+            Err(corrupt(
+                "Registry .gitignore is not a regular file",
+                json!({"path":path_text(&path)}),
+            ))
+        }
+        Ok(_) => Ok(()),
+        Err(error) => Err(registry_io(&path, error)),
+    }
 }
 
 fn ensure_real_directory(
@@ -429,6 +530,13 @@ fn corrupt(message: &str, details: serde_json::Value) -> ApiError {
 
 fn path_text(path: &Path) -> String {
     path.display().to_string()
+}
+
+fn serialize_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&path_text(path))
 }
 
 fn source_error(path: &Path, error: std::io::Error) -> ApiError {

@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BTreeMap};
 
 use hashbrown::{HashMap, HashSet};
 use regex::Regex;
@@ -78,7 +78,7 @@ pub fn summary(profile: &Profile) -> Value {
     envelope(
         profile,
         profile.total_weight,
-        false,
+        Vec::new(),
         vec!["Weight unit is opaque; it is not assumed to be time or cycles.".into()],
         json!({"total_weight":profile.total_weight,"frame_count":profile.frames.len(),"unique_stack_count":profile.stacks.len(),"max_depth":profile.max_depth,"unknown_frame_weight":unknown_frame_weight,"top_self":top_self,"top_inclusive":top_inclusive}),
     )
@@ -102,7 +102,8 @@ pub fn find_symbols(
         })
         .collect();
     ids.sort_by(|a, b| frame_order(profile, *a, *b, TopSort::Inclusive));
-    let truncated = ids.len() > limit;
+    let available = ids.len();
+    let truncation_reasons = row_limit_reason(limit, available);
     ids.truncate(limit);
     let warnings = if ids.is_empty() {
         vec!["No exact frame identities matched; try a broader contains query or profile_find_symbols regex.".into()]
@@ -112,20 +113,26 @@ pub fn find_symbols(
     let rows: Vec<_> = ids
         .iter()
         .map(|id| {
-            frame_row(
+            let row = frame_row(
                 profile,
                 *id,
                 &profile.frame_stats[*id as usize],
                 profile.total_weight,
-            )
+            );
+            let mut value = serde_json::to_value(row).expect("frame row serializes");
+            value
+                .as_object_mut()
+                .expect("frame row is an object")
+                .insert("context_hint".into(), symbol_context(profile, *id));
+            value
         })
         .collect();
     Ok(envelope(
         profile,
         profile.total_weight,
-        truncated,
+        truncation_reasons,
         warnings,
-        json!({"query":query,"mode":match mode {MatchMode::Contains=>"contains",MatchMode::Regex=>"regex"},"matches":rows}),
+        json!({"query":query,"mode":match mode {MatchMode::Contains=>"contains",MatchMode::Regex=>"regex"},"symbol_metadata":"folded_frames_and_observed_context_only","matches":rows}),
     ))
 }
 
@@ -159,7 +166,8 @@ pub fn top(
         })
         .collect();
     ids.sort_by(|a, b| frame_order_stats(profile, &stats, *a, *b, sort));
-    let truncated = ids.len() > limit;
+    let available = ids.len();
+    let truncation_reasons = row_limit_reason(limit, available);
     ids.truncate(limit);
     let rows: Vec<_> = ids
         .iter()
@@ -176,7 +184,7 @@ pub fn top(
     Ok(envelope(
         profile,
         scope_weight,
-        truncated,
+        truncation_reasons,
         Vec::new(),
         json!({"sort":match sort {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"focus":focused_id,"rows":rows}),
     ))
@@ -222,21 +230,36 @@ pub fn tree(
             )
         })?;
     let mut budget = max_nodes;
-    let (node, truncated) = render_cct(
-        profile,
-        root_node_id,
-        root.total_weight,
-        0,
+    let mut reason_stats = BTreeMap::new();
+    let mut continuations = Vec::new();
+    let mut continuation_count = 0usize;
+    let mut render = RenderState {
+        scope: root.total_weight,
         max_depth,
-        min_scope_percent,
-        &mut budget,
-    );
+        min_percent: min_scope_percent,
+        budget: &mut budget,
+        reason_stats: &mut reason_stats,
+        continuations: &mut continuations,
+        continuation_count: &mut continuation_count,
+        continuation_limit: 128,
+    };
+    let (node, _) = render_cct(profile, root_node_id, 0, &mut render);
+    let continuations_truncated = continuation_count > continuations.len();
+    let truncation_reasons =
+        tree_reason_values(&reason_stats, max_depth, max_nodes, min_scope_percent);
     Ok(envelope(
         profile,
         root.total_weight,
-        truncated,
+        truncation_reasons,
         Vec::new(),
-        json!({"root":node}),
+        json!({
+            "root":node,
+            "continuations":continuations,
+            "continuations_truncated":continuations_truncated,
+            "continuation_limit":128,
+            "continuations_available":continuation_count,
+            "continuations_omitted":continuation_count.saturating_sub(continuations.len())
+        }),
     ))
 }
 
@@ -314,19 +337,26 @@ fn directional(
         }
     }
     let mut budget = max_nodes;
-    let (node, truncated) = render_temp(
-        profile,
-        &root,
+    let mut reason_stats = BTreeMap::new();
+    let mut continuations = Vec::new();
+    let mut continuation_count = 0usize;
+    let mut render = RenderState {
         scope,
-        0,
         max_depth,
-        min_scope_percent,
-        &mut budget,
-    );
+        min_percent: min_scope_percent,
+        budget: &mut budget,
+        reason_stats: &mut reason_stats,
+        continuations: &mut continuations,
+        continuation_count: &mut continuation_count,
+        continuation_limit: 0,
+    };
+    let (node, _) = render_temp(profile, &root, 0, &mut render);
+    let truncation_reasons =
+        tree_reason_values(&reason_stats, max_depth, max_nodes, min_scope_percent);
     Ok(envelope(
         profile,
         scope,
-        truncated,
+        truncation_reasons,
         Vec::new(),
         json!({"frame":frame_row(profile, frame, &profile.frame_stats[frame as usize], scope),"root":node}),
     ))
@@ -359,8 +389,12 @@ pub fn paths_with_window(
             frame_sequence(profile, &a.frames).cmp(&frame_sequence(profile, &b.frames))
         })
     });
-    let mut truncated = stacks.len() > limit;
+    let available = stacks.len();
+    let mut truncation_reasons = row_limit_reason(limit, available);
     stacks.truncate(limit);
+    let mut cropped_paths = 0usize;
+    let mut total_omitted_before = 0usize;
+    let mut total_omitted_after = 0usize;
     let rows: Vec<_> = stacks
         .into_iter()
         .map(|stack| {
@@ -373,13 +407,23 @@ pub fn paths_with_window(
             let total_depth = stack.frames.len();
             let (frame_start, frame_end) = frame_window_range(total_depth, &positions, window);
             let cropped = frame_start != 0 || frame_end != total_depth;
-            truncated |= cropped;
+            if cropped {
+                cropped_paths += 1;
+                total_omitted_before += frame_start;
+                total_omitted_after += total_depth - frame_end;
+            }
+            let display_target_positions: Vec<_> = positions
+                .iter()
+                .filter(|position| **position >= frame_start && **position < frame_end)
+                .map(|position| *position - frame_start)
+                .collect();
             json!({
                 "frames":frame_sequence(profile,&stack.frames[frame_start..frame_end]),
                 "weight":stack.weight,
                 "profile_percent":percent(stack.weight,profile.total_weight),
                 "scope_percent":percent(stack.weight,scope),
                 "target_positions":positions,
+                "display_target_positions":display_target_positions,
                 "total_depth":total_depth,
                 "frame_start":frame_start,
                 "frame_end":frame_end,
@@ -388,10 +432,24 @@ pub fn paths_with_window(
             })
         })
         .collect();
+    if cropped_paths > 0 {
+        truncation_reasons.push(json!({
+            "kind":"frame_window",
+            "mode":match window {
+                Some(FrameWindow::Head { .. })=>"head",
+                Some(FrameWindow::Tail { .. })=>"tail",
+                Some(FrameWindow::AroundTarget { .. })=>"around_target",
+                None=>"none"
+            },
+            "cropped_paths":cropped_paths,
+            "total_omitted_before":total_omitted_before,
+            "total_omitted_after":total_omitted_after
+        }));
+    }
     Ok(envelope(
         profile,
         scope,
-        truncated,
+        truncation_reasons,
         Vec::new(),
         json!({"through":frame,"paths":rows}),
     ))
@@ -472,10 +530,11 @@ pub fn diff(
         };
         primary.then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
     });
-    let truncated = rows.len() > limit;
+    let available = rows.len();
+    let truncation_reasons = row_limit_reason(limit, available);
     rows.truncate(limit);
     Ok(
-        json!({"schema_version":SCHEMA_VERSION,"baseline":profile_meta(baseline),"candidate":profile_meta(candidate),"scope_weight":{"baseline":baseline.total_weight,"candidate":candidate.total_weight},"truncated":truncated,"warnings":["Percentage-point changes do not prove causality or statistical significance."],"data":{"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"sort":match sort {DiffSort::Regression=>"regression",DiffSort::Improvement=>"improvement",DiffSort::Absolute=>"absolute"},"rows":rows}}),
+        json!({"schema_version":SCHEMA_VERSION,"baseline":profile_meta(baseline),"candidate":profile_meta(candidate),"scope_weight":{"baseline":baseline.total_weight,"candidate":candidate.total_weight},"truncated":!truncation_reasons.is_empty(),"truncation_reasons":truncation_reasons,"warnings":["Percentage-point changes do not prove causality or statistical significance."],"data":{"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"sort":match sort {DiffSort::Regression=>"regression",DiffSort::Improvement=>"improvement",DiffSort::Absolute=>"absolute"},"rows":rows}}),
     )
 }
 
@@ -553,6 +612,40 @@ fn check_budget(depth: usize, nodes: usize, percent: f64) -> Result<(), ApiError
         Ok(())
     }
 }
+
+fn row_limit_reason(limit: usize, available: usize) -> Vec<Value> {
+    if available > limit {
+        vec![json!({
+            "kind":"row_limit",
+            "limit":limit,
+            "returned":limit,
+            "available":available,
+            "omitted":available-limit
+        })]
+    } else {
+        Vec::new()
+    }
+}
+
+fn tree_reason_values(
+    stats: &BTreeMap<&'static str, TruncationStats>,
+    max_depth: usize,
+    max_nodes: usize,
+    min_scope_percent: f64,
+) -> Vec<Value> {
+    stats
+        .iter()
+        .map(|(kind, stats)| match *kind {
+            "depth_limit" => json!({"kind":"depth_limit","max_depth":max_depth,"omitted_children":stats.count,"omitted_weight":stats.weight}),
+            "node_budget" => json!({"kind":"node_budget","max_nodes":max_nodes,"omitted_children":stats.count,"omitted_weight":stats.weight}),
+            "min_scope_percent" => {
+                json!({"kind":"min_scope_percent","threshold":min_scope_percent,"omitted_children":stats.count,"omitted_weight":stats.weight})
+            }
+            _ => json!({"kind":kind,"omitted_children":stats.count,"omitted_weight":stats.weight}),
+        })
+        .collect()
+}
+
 fn frame_order(profile: &Profile, a: FrameId, b: FrameId, sort: TopSort) -> Ordering {
     frame_order_stats(profile, &profile.frame_stats, a, b, sort)
 }
@@ -603,6 +696,57 @@ fn frame_sequence(profile: &Profile, frames: &[FrameId]) -> Vec<String> {
         .collect()
 }
 
+fn symbol_context(profile: &Profile, frame: FrameId) -> Value {
+    let mut callers: HashMap<FrameId, u64> = HashMap::new();
+    let mut callees: HashMap<FrameId, u64> = HashMap::new();
+    for stack_id in &profile.frame_to_stacks[frame as usize] {
+        let stack = &profile.stacks[*stack_id as usize];
+        let mut stack_callers = HashSet::new();
+        let mut stack_callees = HashSet::new();
+        for (position, candidate) in stack.frames.iter().enumerate() {
+            if *candidate != frame {
+                continue;
+            }
+            if position > 0 {
+                stack_callers.insert(stack.frames[position - 1]);
+            }
+            if position + 1 < stack.frames.len() {
+                stack_callees.insert(stack.frames[position + 1]);
+            }
+        }
+        for caller in stack_callers {
+            *callers.entry(caller).or_default() += stack.weight;
+        }
+        for callee in stack_callees {
+            *callees.entry(callee).or_default() += stack.weight;
+        }
+    }
+    json!({
+        "top_callers":context_rows(profile,callers),
+        "top_callees":context_rows(profile,callees)
+    })
+}
+
+fn context_rows(profile: &Profile, weights: HashMap<FrameId, u64>) -> Vec<Value> {
+    let mut rows: Vec<_> = weights.into_iter().collect();
+    rows.sort_by(|(left_id, left_weight), (right_id, right_weight)| {
+        right_weight
+            .cmp(left_weight)
+            .then_with(|| {
+                profile
+                    .frame_name(*left_id)
+                    .cmp(profile.frame_name(*right_id))
+            })
+            .then(left_id.cmp(right_id))
+    });
+    rows.into_iter()
+        .take(3)
+        .map(|(frame_id, weight)| {
+            json!({"frame_id":frame_id,"name":profile.frame_name(frame_id),"weight":weight})
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct TempNode {
     frame: FrameId,
@@ -610,6 +754,32 @@ struct TempNode {
     total_weight: u64,
     children: HashMap<FrameId, TempNode>,
 }
+
+struct RenderState<'a> {
+    scope: u64,
+    max_depth: usize,
+    min_percent: f64,
+    budget: &'a mut usize,
+    reason_stats: &'a mut BTreeMap<&'static str, TruncationStats>,
+    continuations: &'a mut Vec<Value>,
+    continuation_count: &'a mut usize,
+    continuation_limit: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TruncationStats {
+    count: usize,
+    weight: u64,
+}
+
+impl RenderState<'_> {
+    fn note_truncation(&mut self, reason: &'static str, weight: u64) {
+        let stats = self.reason_stats.entry(reason).or_default();
+        stats.count = stats.count.saturating_add(1);
+        stats.weight = stats.weight.saturating_add(weight);
+    }
+}
+
 impl TempNode {
     fn new(frame: FrameId) -> Self {
         Self {
@@ -648,52 +818,48 @@ fn ordered_children<'a>(
 fn render_temp(
     profile: &Profile,
     node: &TempNode,
-    scope: u64,
     depth: usize,
-    max_depth: usize,
-    min_percent: f64,
-    budget: &mut usize,
+    state: &mut RenderState<'_>,
 ) -> (Value, bool) {
-    *budget -= 1;
+    *state.budget -= 1;
     let children = ordered_children(profile, node.children.iter().map(|(id, node)| (*id, node)));
     let mut rendered = Vec::new();
     let mut omitted_count = 0;
     let mut omitted_weight = 0;
     let mut truncated = false;
     for (_id, child) in children {
-        if depth >= max_depth || percent(child.total_weight, scope) < min_percent || *budget == 0 {
+        let reason = if depth >= state.max_depth {
+            Some("depth_limit")
+        } else if percent(child.total_weight, state.scope) < state.min_percent {
+            Some("min_scope_percent")
+        } else if *state.budget == 0 {
+            Some("node_budget")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            state.note_truncation(reason, child.total_weight);
             omitted_count += 1;
             omitted_weight += child.total_weight;
             truncated = true;
         } else {
-            let (value, child_truncated) = render_temp(
-                profile,
-                child,
-                scope,
-                depth + 1,
-                max_depth,
-                min_percent,
-                budget,
-            );
+            let (value, child_truncated) = render_temp(profile, child, depth + 1, state);
             truncated |= child_truncated;
             rendered.push(value);
         }
     }
     (
-        json!({"node_id":Value::Null,"frame_id":node.frame,"name":profile.frame_name(node.frame),"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
+        json!({"node_id":Value::Null,"frame_id":node.frame,"name":profile.frame_name(node.frame),"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,state.scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
         truncated,
     )
 }
 fn render_cct(
     profile: &Profile,
     node_id: NodeId,
-    scope: u64,
     depth: usize,
-    max_depth: usize,
-    min_percent: f64,
-    budget: &mut usize,
+    state: &mut RenderState<'_>,
 ) -> (Value, bool) {
-    *budget -= 1;
+    *state.budget -= 1;
     let node = &profile.cct.nodes[node_id as usize];
     let children = ordered_cct(profile, node);
     let mut rendered = Vec::new();
@@ -702,27 +868,43 @@ fn render_cct(
     let mut truncated = false;
     for child_id in children {
         let child = &profile.cct.nodes[child_id as usize];
-        if depth >= max_depth || percent(child.total_weight, scope) < min_percent || *budget == 0 {
+        let reason = if depth >= state.max_depth {
+            Some("depth_limit")
+        } else if percent(child.total_weight, state.scope) < state.min_percent {
+            Some("min_scope_percent")
+        } else if *state.budget == 0 {
+            Some("node_budget")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            state.note_truncation(reason, child.total_weight);
+            *state.continuation_count += 1;
             omitted_count += 1;
             omitted_weight += child.total_weight;
             truncated = true;
+            if state.continuations.len() < state.continuation_limit {
+                let frame_id = child.frame.expect("non-root child has a frame");
+                state.continuations.push(json!({
+                    "node_id":child_id,
+                    "frame_id":frame_id,
+                    "name":profile.frame_name(frame_id),
+                    "reason":reason,
+                    "profile_fingerprint":profile.source.fingerprint,
+                    "total_weight":child.total_weight,
+                    "profile_percent":percent(child.total_weight,profile.total_weight),
+                    "scope_percent":percent(child.total_weight,state.scope)
+                }));
+            }
         } else {
-            let (value, child_truncated) = render_cct(
-                profile,
-                child_id,
-                scope,
-                depth + 1,
-                max_depth,
-                min_percent,
-                budget,
-            );
+            let (value, child_truncated) = render_cct(profile, child_id, depth + 1, state);
             truncated |= child_truncated;
             rendered.push(value);
         }
     }
     let name = node.frame.map(|id| profile.frame_name(id));
     (
-        json!({"node_id":node_id,"frame_id":node.frame,"name":name,"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
+        json!({"node_id":node_id,"frame_id":node.frame,"name":name,"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,state.scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
         truncated,
     )
 }

@@ -17,6 +17,10 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
         .join(".prof-mcp/profiles")
         .join(format!("{}.folded", first.fingerprint));
     assert_eq!(fs::read(&registered).unwrap(), input);
+    assert_eq!(
+        fs::read_to_string(workspace.path().join(".prof-mcp/.gitignore")).unwrap(),
+        "# prof-mcp data files are local to this workspace.\n# Keep this file visible so the registry directory can be intentionally ignored.\n*\n!.gitignore\n"
+    );
 
     let second = registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
     assert_eq!(second.fingerprint, first.fingerprint);
@@ -44,6 +48,21 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
         replacement.fingerprint
     );
     assert_ne!(replacement.fingerprint, first.fingerprint);
+    let status = registry::status(workspace.path()).unwrap();
+    assert_eq!(status.active, "candidate");
+    assert_eq!(status.profiles.len(), 2);
+    let switched = registry::set_active(workspace.path(), "first").unwrap();
+    assert_eq!(switched.active, "first");
+    assert_eq!(
+        registry::resolve(workspace.path(), None).unwrap().alias,
+        "first"
+    );
+    assert_eq!(
+        registry::set_active(workspace.path(), "missing")
+            .unwrap_err()
+            .code,
+        "profile_alias_not_found"
+    );
 }
 
 #[test]

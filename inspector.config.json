@@ -2,7 +2,7 @@
   "mcpServers": {
     "prof-mcp": {
       "command": "./target/debug/prof-mcp",
-      "args": []
+      "args": ["serve", "--mcp"]
     }
   }
 }

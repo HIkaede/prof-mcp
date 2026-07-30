@@ -10,6 +10,14 @@ fn self_inclusive_find_and_focused_top_have_exact_scopes() {
     assert_eq!(profile.frame_stats[a as usize].inclusive_weight, 55);
     let find = query::find_symbols(&profile, "A", MatchMode::Contains, 20).unwrap();
     assert_eq!(find["data"]["matches"][0]["name"], "A");
+    assert_eq!(
+        find["data"]["symbol_metadata"],
+        "folded_frames_and_observed_context_only"
+    );
+    assert_eq!(
+        find["data"]["matches"][0]["context_hint"]["top_callees"][0]["name"],
+        "B"
+    );
     let top = query::top(
         &profile,
         TopSort::SelfWeight,
@@ -37,9 +45,35 @@ fn tree_pruning_is_deterministic_and_continuations_are_guarded() {
     let one = query::tree(&profile, 0, None, 0, 1, 0.0).unwrap();
     assert!(one["truncated"].as_bool().unwrap());
     assert_eq!(one["data"]["root"]["omitted_children"], 3);
+    assert_eq!(one["truncation_reasons"][0]["kind"], "depth_limit");
+    assert_eq!(one["truncation_reasons"][0]["omitted_children"], 3);
+    assert_eq!(one["truncation_reasons"][0]["omitted_weight"], 10);
+    assert_eq!(one["data"]["continuations"].as_array().unwrap().len(), 3);
+    assert_eq!(one["data"]["continuations_available"], 3);
+    assert_eq!(one["data"]["continuations_omitted"], 0);
+    assert_eq!(
+        one["data"]["continuations"][0]["profile_fingerprint"],
+        profile.source.fingerprint
+    );
+    let continuation = one["data"]["continuations"][0]["node_id"].as_u64().unwrap() as u32;
+    let continuation_page = query::tree(
+        &profile,
+        continuation,
+        Some(&profile.source.fingerprint),
+        4,
+        64,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(continuation_page["data"]["root"]["node_id"], continuation);
     let threshold = query::tree(&profile, 0, None, 4, 64, 20.0).unwrap();
     assert_eq!(threshold["data"]["root"]["omitted_children"], 1);
+    assert_eq!(
+        threshold["truncation_reasons"][0]["kind"],
+        "min_scope_percent"
+    );
     let tree = query::tree(&profile, 0, None, 4, 2, 0.0).unwrap();
+    assert_eq!(tree["truncation_reasons"][0]["kind"], "node_budget");
     let child_id = tree["data"]["root"]["children"][0]["node_id"]
         .as_u64()
         .unwrap() as u32;
@@ -77,6 +111,8 @@ fn paths_positions_limits_selectors_and_regex_budgets_are_enforced() {
         paths["data"]["paths"][0]["target_positions"],
         serde_json::json!([1, 2])
     );
+    assert_eq!(paths["truncation_reasons"][0]["kind"], "row_limit");
+    assert_eq!(paths["truncation_reasons"][0]["available"], 2);
     assert_eq!(
         query::find_symbols(&profile, "[", MatchMode::Regex, 20)
             .unwrap_err()
@@ -172,10 +208,15 @@ fn path_windows_crop_display_only_and_keep_all_recursive_positions() {
         around["data"]["paths"][0]["target_positions"],
         serde_json::json!([2, 3])
     );
+    assert_eq!(
+        around["data"]["paths"][0]["display_target_positions"],
+        serde_json::json!([1, 2])
+    );
     assert_eq!(around["data"]["paths"][0]["frame_start"], 1);
     assert_eq!(around["data"]["paths"][0]["frame_end"], 5);
     assert_eq!(around["data"]["paths"][0]["total_depth"], 6);
     assert!(around["truncated"].as_bool().unwrap());
+    assert_eq!(around["truncation_reasons"][0]["kind"], "frame_window");
     assert!(!full["truncated"].as_bool().unwrap());
     assert_eq!(
         query::paths_with_window(
