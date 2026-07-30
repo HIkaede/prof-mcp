@@ -1,4 +1,5 @@
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::profile::{FrameId, FrameStats, Profile};
@@ -40,7 +41,7 @@ pub fn envelope(
     })
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct FrameRow {
     pub frame_id: FrameId,
     pub name: String,

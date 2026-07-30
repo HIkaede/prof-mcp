@@ -141,16 +141,24 @@ fn discovery_finds_root_from_descendant() {
 }
 
 #[test]
-fn registry_busy_is_recoverable_for_api_and_cli_and_success_cleans_lock() {
+fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() {
+    use std::fs::OpenOptions;
     use std::process::Command;
+
+    use fs2::FileExt;
 
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
     registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let lock = workspace.path().join(".prof-mcp/.register.lock");
-    assert!(!lock.exists());
-    fs::write(&lock, "busy").unwrap();
+    assert!(lock.exists());
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    lock_file.lock_exclusive().unwrap();
     assert_eq!(
         registry::register(workspace.path(), &source, Some("api"), 1024)
             .unwrap_err()
@@ -165,10 +173,10 @@ fn registry_busy_is_recoverable_for_api_and_cli_and_success_cleans_lock() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Another registration"));
-    fs::remove_file(&lock).unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Another registry operation"));
+    drop(lock_file);
     registry::register(workspace.path(), &source, Some("api"), 1024).unwrap();
-    assert!(!lock.exists());
+    assert!(lock.exists());
 }
 
 #[test]
@@ -225,7 +233,7 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
             .count(),
         before_profiles
     );
-    assert!(!workspace.path().join(".prof-mcp/.register.lock").exists());
+    assert!(workspace.path().join(".prof-mcp/.register.lock").exists());
     assert!(
         fs::read_dir(workspace.path().join(".prof-mcp/profiles"))
             .unwrap()
@@ -237,6 +245,78 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
     );
     assert_eq!(fs::read(&source).unwrap(), bytes);
     assert_eq!(fs::read(&failed_source).unwrap(), failed_bytes);
+}
+
+#[test]
+fn gc_only_removes_unreferenced_regular_profile_blobs_and_supports_dry_run() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    fs::write(&source, "root;B 2\n").unwrap();
+    let old_candidate =
+        registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+    fs::write(&source, "root;C 3\n").unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+
+    let profiles = workspace.path().join(".prof-mcp/profiles");
+    let manual_orphan = format!("{}.folded", "f".repeat(64));
+    fs::write(profiles.join(&manual_orphan), "orphan").unwrap();
+    #[cfg(unix)]
+    let symlink_orphan = {
+        use std::os::unix::fs::symlink;
+
+        let name = format!("{}.folded", "e".repeat(64));
+        let target = workspace.path().join("outside-profile-target");
+        fs::write(&target, "outside").unwrap();
+        symlink(&target, profiles.join(&name)).unwrap();
+        (name, target)
+    };
+    fs::write(profiles.join("notes.txt"), "leave me").unwrap();
+    fs::create_dir(profiles.join("directory")).unwrap();
+    let manifest = fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap();
+
+    let dry = registry::gc(workspace.path(), true).unwrap();
+    assert!(dry.dry_run);
+    assert_eq!(
+        dry.removed,
+        vec![
+            format!("profiles/{}.folded", old_candidate.fingerprint),
+            format!("profiles/{manual_orphan}"),
+        ]
+    );
+    assert!(dry.skipped.contains(&"profiles/directory".to_string()));
+    assert!(dry.skipped.contains(&"profiles/notes.txt".to_string()));
+    #[cfg(unix)]
+    assert!(
+        dry.skipped
+            .contains(&format!("profiles/{}", symlink_orphan.0))
+    );
+    assert!(profiles.join(&manual_orphan).exists());
+    assert_eq!(
+        fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
+        manifest
+    );
+
+    let applied = registry::gc(workspace.path(), false).unwrap();
+    assert!(!applied.dry_run);
+    assert_eq!(applied.removed, dry.removed);
+    assert!(!profiles.join(&manual_orphan).exists());
+    assert!(
+        !profiles
+            .join(format!("{}.folded", old_candidate.fingerprint))
+            .exists()
+    );
+    assert!(profiles.join("notes.txt").exists());
+    #[cfg(unix)]
+    {
+        assert!(profiles.join(&symlink_orphan.0).is_symlink());
+        assert_eq!(fs::read(&symlink_orphan.1).unwrap(), b"outside");
+    }
+    assert_eq!(
+        fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
+        manifest
+    );
 }
 
 #[cfg(unix)]

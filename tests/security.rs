@@ -30,6 +30,11 @@ async fn registry_resolves_only_registered_aliases_and_rejects_corruption() {
 
 #[tokio::test]
 async fn missing_workspace_is_a_business_error_not_startup_failure() {
+    // Discovery walks ancestors, so Linux tmpfs keeps this test independent
+    // from an unrelated developer registry under `/tmp`.
+    #[cfg(target_os = "linux")]
+    let workspace = tempfile::tempdir_in("/dev/shm").unwrap();
+    #[cfg(not(target_os = "linux"))]
     let workspace = tempdir().unwrap();
     let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
     assert_eq!(

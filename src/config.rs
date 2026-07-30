@@ -54,6 +54,12 @@ pub enum Command {
         #[arg(value_name = "ALIAS")]
         alias: String,
     },
+    /// Remove unreferenced folded blobs from the nearest workspace registry.
+    Gc {
+        /// Print the deletion plan without removing files.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Clone, Debug)]

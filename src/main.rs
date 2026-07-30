@@ -54,6 +54,23 @@ async fn main() -> Result<()> {
             println!("active alias={}", status.active);
             Ok(())
         }
+        Some(Command::Gc { dry_run }) => {
+            let report =
+                registry::gc(&std::env::current_dir()?, dry_run).map_err(anyhow::Error::msg)?;
+            println!("registry={}", report.registry_root.display());
+            println!("dry_run={}", report.dry_run);
+            for path in report.removed {
+                println!(
+                    "{} {}",
+                    if dry_run { "would_remove" } else { "removed" },
+                    path
+                );
+            }
+            for path in report.skipped {
+                eprintln!("skipped {path}");
+            }
+            Ok(())
+        }
         None => match cli.profile {
             Some(profile) => register(&config, &profile, cli.name.as_deref()),
             None => setup::run(false),

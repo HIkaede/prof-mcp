@@ -5,7 +5,76 @@ use rmcp::{
     ClientHandler, ServiceExt,
     model::{CallToolRequestParams, ClientInfo},
 };
+use serde::Deserialize;
 use tempfile::tempdir;
+
+#[derive(Deserialize)]
+struct TypedEnvelope<T> {
+    schema_version: String,
+    data: T,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct FrameRow {
+    frame_id: u32,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct TopData {
+    rows: Vec<FrameRow>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct TreeNode {
+    node_id: Option<u32>,
+    children: Vec<TreeNode>,
+}
+
+#[derive(Deserialize)]
+struct TreeData {
+    root: TreeNode,
+}
+
+#[derive(Deserialize)]
+struct DirectionData {
+    frame: FrameRow,
+    root: TreeNode,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct PathRow {
+    frames: Vec<String>,
+    target_positions: Vec<usize>,
+}
+
+#[derive(Deserialize)]
+struct PathsData {
+    paths: Vec<PathRow>,
+    total_frame_budget: TotalFrameBudget,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct TotalFrameBudget {
+    limit: usize,
+    returned: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct DiffRow {
+    name: String,
+    delta_pp: f64,
+}
+
+#[derive(Deserialize)]
+struct DiffData {
+    rows: Vec<DiffRow>,
+}
 
 #[derive(Clone, Debug, Default)]
 struct TestClient;
@@ -84,6 +153,20 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
             .unwrap()
             .contains(&serde_json::json!("truncation_reasons"))
     );
+    for tool_index in [2, 3, 4, 5, 6, 7] {
+        let schema = tools.tools[tool_index].output_schema.as_ref().unwrap();
+        assert_ne!(
+            schema["properties"]["data"],
+            serde_json::json!({"type":"object"})
+        );
+        assert!(schema["properties"]["data"].get("$ref").is_some());
+        assert!(
+            schema["anyOf"][1]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("retry_hint"))
+        );
+    }
     assert!(
         summary_schema["anyOf"][1]["required"]
             .as_array()
@@ -132,6 +215,14 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
     assert_eq!(paths_schema[2]["properties"]["before"]["maximum"], 4096);
     assert_eq!(paths_schema[2]["properties"]["after"]["minimum"], 0);
     assert_eq!(paths_schema[2]["properties"]["after"]["maximum"], 4096);
+    assert_eq!(
+        tools.tools[6].input_schema["properties"]["max_total_frames"]["minimum"],
+        1
+    );
+    assert_eq!(
+        tools.tools[6].input_schema["properties"]["max_total_frames"]["maximum"],
+        5000
+    );
     let result = client
         .call_tool(
             CallToolRequestParams::new("profile_summary")
@@ -193,7 +284,35 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
             .await
             .unwrap();
         assert_eq!(response.is_error, Some(false), "{name}");
-        assert!(response.structured_content.is_some(), "{name}");
+        let structured = response
+            .structured_content
+            .expect("{name} structured content");
+        match name {
+            "profile_top" => {
+                let typed: TypedEnvelope<TopData> = serde_json::from_value(structured).unwrap();
+                assert_eq!(typed.schema_version, "2");
+                assert!(!typed.data.rows.is_empty());
+                assert!(!typed.data.rows[0].name.is_empty());
+            }
+            "profile_tree" => {
+                let typed: TypedEnvelope<TreeData> = serde_json::from_value(structured).unwrap();
+                assert_eq!(typed.schema_version, "2");
+                assert_eq!(typed.data.root.node_id, Some(0));
+            }
+            "profile_callers" | "profile_callees" => {
+                let typed: TypedEnvelope<DirectionData> =
+                    serde_json::from_value(structured).unwrap();
+                assert_eq!(typed.data.frame.name, "A");
+                assert!(typed.data.root.node_id.is_none());
+            }
+            "profile_diff" => {
+                let typed: TypedEnvelope<DiffData> = serde_json::from_value(structured).unwrap();
+                assert!(!typed.data.rows.is_empty());
+                assert_eq!(typed.data.rows[0].delta_pp, 0.0);
+            }
+            "profile_find_symbols" => {}
+            _ => unreachable!("unexpected tool in typed output loop"),
+        }
     }
     let truncated = client
         .call_tool(
@@ -207,11 +326,12 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
         .await
         .unwrap();
     assert_eq!(truncated.is_error, Some(false));
-    assert!(
-        truncated.structured_content.unwrap()["truncated"]
-            .as_bool()
-            .unwrap()
-    );
+    let truncated_structured = truncated.structured_content.unwrap();
+    assert!(truncated_structured["truncated"].as_bool().unwrap());
+    let typed_paths: TypedEnvelope<PathsData> =
+        serde_json::from_value(truncated_structured).unwrap();
+    assert_eq!(typed_paths.data.total_frame_budget.limit, 500);
+    assert!(!typed_paths.data.paths.is_empty());
     assert!(
         truncated.content[0]
             .as_text()
@@ -334,6 +454,12 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
 
 #[tokio::test]
 async fn mcp_stays_available_without_registry_and_observes_registration_after_start() {
+    // Registry discovery intentionally walks ancestors. Use tmpfs on Linux so
+    // a developer's unrelated `/tmp/.prof-mcp` cannot turn this into a
+    // registered-workspace test.
+    #[cfg(target_os = "linux")]
+    let workspace = tempfile::tempdir_in("/dev/shm").unwrap();
+    #[cfg(not(target_os = "linux"))]
     let workspace = tempdir().unwrap();
     let server = ProfileServer::new_in_workspace(
         Config {

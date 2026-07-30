@@ -42,6 +42,9 @@ pub enum FrameWindow {
     AroundTarget { before: usize, after: usize },
 }
 
+pub const DEFAULT_MAX_TOTAL_FRAMES: usize = 500;
+pub const MAX_TOTAL_FRAMES: usize = 5_000;
+
 pub fn summary(profile: &Profile) -> Value {
     let mut ids: Vec<_> = (0..profile.frames.len() as u32).collect();
     ids.sort_by(|a, b| frame_order(profile, *a, *b, TopSort::SelfWeight));
@@ -372,8 +375,19 @@ pub fn paths_with_window(
     limit: usize,
     window: Option<FrameWindow>,
 ) -> Result<Value, ApiError> {
+    paths_with_window_budget(profile, selector, limit, window, DEFAULT_MAX_TOTAL_FRAMES)
+}
+
+pub fn paths_with_window_budget(
+    profile: &Profile,
+    selector: &FrameSelector,
+    limit: usize,
+    window: Option<FrameWindow>,
+    max_total_frames: usize,
+) -> Result<Value, ApiError> {
     check_limit(limit, 1, 50, "limit")?;
     check_frame_window(window)?;
+    check_limit(max_total_frames, 1, MAX_TOTAL_FRAMES, "max_total_frames")?;
     let frame = resolve_selector(profile, selector)?;
     let stack_ids = &profile.frame_to_stacks[frame as usize];
     let scope: u64 = stack_ids
@@ -392,47 +406,74 @@ pub fn paths_with_window(
     let available = stacks.len();
     let mut truncation_reasons = row_limit_reason(limit, available);
     stacks.truncate(limit);
-    let mut cropped_paths = 0usize;
-    let mut total_omitted_before = 0usize;
-    let mut total_omitted_after = 0usize;
-    let rows: Vec<_> = stacks
-        .into_iter()
-        .map(|stack| {
-            let positions: Vec<_> = stack
-                .frames
-                .iter()
-                .enumerate()
-                .filter_map(|(index, id)| (*id == frame).then_some(index))
-                .collect();
-            let total_depth = stack.frames.len();
-            let (frame_start, frame_end) = frame_window_range(total_depth, &positions, window);
-            let cropped = frame_start != 0 || frame_end != total_depth;
-            if cropped {
-                cropped_paths += 1;
-                total_omitted_before += frame_start;
-                total_omitted_after += total_depth - frame_end;
-            }
-            let display_target_positions: Vec<_> = positions
-                .iter()
-                .filter(|position| **position >= frame_start && **position < frame_end)
-                .map(|position| *position - frame_start)
-                .collect();
-            json!({
-                "frames":frame_sequence(profile,&stack.frames[frame_start..frame_end]),
-                "weight":stack.weight,
-                "profile_percent":percent(stack.weight,profile.total_weight),
-                "scope_percent":percent(stack.weight,scope),
-                "target_positions":positions,
-                "display_target_positions":display_target_positions,
-                "total_depth":total_depth,
-                "frame_start":frame_start,
-                "frame_end":frame_end,
-                "omitted_before":frame_start,
-                "omitted_after":total_depth-frame_end,
-            })
-        })
-        .collect();
-    if cropped_paths > 0 {
+    let selected_paths = stacks.len();
+    let mut window_cropped_paths = 0usize;
+    let mut window_omitted_before = 0usize;
+    let mut window_omitted_after = 0usize;
+    let mut budget_remaining = max_total_frames;
+    let mut budget_available = 0usize;
+    let mut budget_returned = 0usize;
+    let mut budget_cropped_paths = 0usize;
+    let mut rows = Vec::new();
+    for stack in stacks {
+        let positions: Vec<_> = stack
+            .frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, id)| (*id == frame).then_some(index))
+            .collect();
+        let total_depth = stack.frames.len();
+        let (requested_frame_start, requested_frame_end) =
+            frame_window_range(total_depth, &positions, window);
+        let requested_frames = requested_frame_end - requested_frame_start;
+        budget_available += requested_frames;
+        if requested_frame_start != 0 || requested_frame_end != total_depth {
+            window_cropped_paths += 1;
+            window_omitted_before += requested_frame_start;
+            window_omitted_after += total_depth - requested_frame_end;
+        }
+        if budget_remaining == 0 {
+            continue;
+        }
+        let (frame_start, frame_end) = if requested_frames <= budget_remaining {
+            (requested_frame_start, requested_frame_end)
+        } else {
+            budget_cropped_paths += 1;
+            budget_range(
+                requested_frame_start,
+                requested_frame_end,
+                &positions,
+                window,
+                budget_remaining,
+            )
+        };
+        let returned_frames = frame_end - frame_start;
+        budget_remaining -= returned_frames;
+        budget_returned += returned_frames;
+        let display_target_positions: Vec<_> = positions
+            .iter()
+            .filter(|position| **position >= frame_start && **position < frame_end)
+            .map(|position| *position - frame_start)
+            .collect();
+        rows.push(json!({
+            "frames":frame_sequence(profile,&stack.frames[frame_start..frame_end]),
+            "weight":stack.weight,
+            "profile_percent":percent(stack.weight,profile.total_weight),
+            "scope_percent":percent(stack.weight,scope),
+            "target_positions":positions,
+            "display_target_positions":display_target_positions,
+            "total_depth":total_depth,
+            "requested_frame_start":requested_frame_start,
+            "requested_frame_end":requested_frame_end,
+            "frame_start":frame_start,
+            "frame_end":frame_end,
+            "omitted_before":frame_start,
+            "omitted_after":total_depth-frame_end,
+            "budget_omitted_before":frame_start-requested_frame_start,
+            "budget_omitted_after":requested_frame_end-frame_end,
+        }));
+    }
+    if window_cropped_paths > 0 {
         truncation_reasons.push(json!({
             "kind":"frame_window",
             "mode":match window {
@@ -441,17 +482,36 @@ pub fn paths_with_window(
                 Some(FrameWindow::AroundTarget { .. })=>"around_target",
                 None=>"none"
             },
-            "cropped_paths":cropped_paths,
-            "total_omitted_before":total_omitted_before,
-            "total_omitted_after":total_omitted_after
+            "cropped_paths":window_cropped_paths,
+            "total_omitted_before":window_omitted_before,
+            "total_omitted_after":window_omitted_after
         }));
+    }
+    let budget_omitted = budget_available - budget_returned;
+    let total_frame_budget = json!({
+        "limit":max_total_frames,
+        "available":budget_available,
+        "returned":budget_returned,
+        "omitted":budget_omitted,
+        "selected_paths":selected_paths,
+        "returned_paths":rows.len(),
+        "omitted_paths":selected_paths-rows.len(),
+        "cropped_paths":budget_cropped_paths,
+    });
+    if budget_omitted > 0 {
+        let mut reason = total_frame_budget
+            .as_object()
+            .expect("static object")
+            .clone();
+        reason.insert("kind".into(), Value::String("total_frame_budget".into()));
+        truncation_reasons.push(Value::Object(reason));
     }
     Ok(envelope(
         profile,
         scope,
         truncation_reasons,
         Vec::new(),
-        json!({"through":frame,"paths":rows}),
+        json!({"through":frame,"paths":rows,"total_frame_budget":total_frame_budget}),
     ))
 }
 
@@ -491,6 +551,28 @@ fn frame_window_range(
                 first.saturating_sub(before),
                 (last.saturating_add(after).saturating_add(1)).min(total_depth),
             )
+        }
+    }
+}
+
+fn budget_range(
+    requested_start: usize,
+    requested_end: usize,
+    positions: &[usize],
+    window: Option<FrameWindow>,
+    remaining: usize,
+) -> (usize, usize) {
+    debug_assert!(remaining > 0);
+    debug_assert!(requested_end - requested_start > remaining);
+    match window {
+        Some(FrameWindow::Head { .. }) => (requested_start, requested_start + remaining),
+        Some(FrameWindow::Tail { .. }) => (requested_end - remaining, requested_end),
+        None | Some(FrameWindow::AroundTarget { .. }) => {
+            let anchor = *positions.first().expect("selected frame occurs in stack");
+            let max_start = requested_end - remaining;
+            let centered_start = anchor.saturating_sub(remaining / 2);
+            let start = centered_start.clamp(requested_start, max_start);
+            (start, start + remaining)
         }
     }
 }

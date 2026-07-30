@@ -1,15 +1,19 @@
 //! Workspace-local, validated profile registration.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{Cursor, Write},
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use crate::{
     error::{ApiError, ProfileError},
@@ -76,6 +80,14 @@ pub struct RegistryProfile {
     pub source_name: String,
     pub byte_len: u64,
     pub registered_unix_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct GcReport {
+    pub registry_root: PathBuf,
+    pub dry_run: bool,
+    pub removed: Vec<String>,
+    pub skipped: Vec<String>,
 }
 
 pub fn valid_alias(alias: &str) -> bool {
@@ -355,6 +367,65 @@ pub fn set_active(workspace: &Path, alias: &str) -> Result<RegistryStatus, ApiEr
     status(workspace)
 }
 
+pub fn gc(workspace: &Path, dry_run: bool) -> Result<GcReport, ApiError> {
+    let state = discover(workspace)?.ok_or_else(|| {
+        ApiError::new(
+            "workspace_not_registered",
+            "No .prof-mcp registry was found for this workspace",
+            json!({"cwd":path_text(workspace)}),
+            "Run prof-mcp register PATH from workspace root.",
+        )
+    })?;
+    ensure_registry_layout(&state)?;
+    let _lock = RegistrationLock::acquire(&state)?;
+    let manifest = read_manifest_required(&state)?;
+    validate_manifest(&manifest)?;
+    let referenced: BTreeSet<_> = manifest
+        .profiles
+        .values()
+        .map(|entry| entry.file.clone())
+        .collect();
+    let profiles = state.join(PROFILES_DIR);
+    let mut entries: Vec<_> = fs::read_dir(&profiles)
+        .map_err(|error| registry_io(&profiles, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| registry_io(&profiles, error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut removable = Vec::new();
+    let mut skipped = Vec::new();
+    for entry in entries {
+        let name = entry.file_name();
+        let relative = format!("{PROFILES_DIR}/{}", name.to_string_lossy());
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| registry_io(&path, error))?;
+        if !is_profile_blob_name(&name)
+            || metadata.file_type().is_symlink()
+            || !metadata.file_type().is_file()
+        {
+            skipped.push(relative);
+            continue;
+        }
+        if !referenced.contains(&relative) {
+            removable.push((relative, path));
+        }
+    }
+
+    let mut removed = Vec::with_capacity(removable.len());
+    for (relative, path) in removable {
+        if !dry_run {
+            fs::remove_file(&path).map_err(|error| registry_io(&path, error))?;
+        }
+        removed.push(relative);
+    }
+    Ok(GcReport {
+        registry_root: state,
+        dry_run,
+        removed,
+        skipped,
+    })
+}
+
 fn profile_file(fingerprint: &str) -> String {
     format!("{PROFILES_DIR}/{fingerprint}.folded")
 }
@@ -510,6 +581,12 @@ fn valid_fingerprint(fingerprint: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+fn is_profile_blob_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_suffix(".folded"))
+        .is_some_and(valid_fingerprint)
+}
+
 fn invalid_alias(alias: &str) -> ApiError {
     ApiError::new(
         "invalid_profile_alias",
@@ -621,7 +698,7 @@ fn atomic_replace(destination: &Path, bytes: &[u8]) -> Result<(), ApiError> {
     result.map_err(|error| registry_io(destination, error))
 }
 
-struct RegistrationLock(PathBuf);
+struct RegistrationLock(fs::File);
 impl RegistrationLock {
     fn acquire(state: &Path) -> Result<Self, ApiError> {
         let path = state.join(LOCK);
@@ -635,39 +712,74 @@ impl RegistrationLock {
                     json!({"path":path_text(&path)}),
                 ));
             }
-            Ok(_) => {
-                return Err(ApiError::new(
-                    "registry_busy",
-                    "Another registration is already updating this workspace",
-                    json!({}),
-                    "Retry after the other prof-mcp registration exits.",
-                ));
-            }
+            Ok(_) => {}
             Err(error) => return Err(registry_io(&path, error)),
         }
-        OpenOptions::new()
+        let file = OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    ApiError::new(
-                        "registry_busy",
-                        "Another registration is already updating this workspace",
-                        json!({}),
-                        "Retry after the other prof-mcp registration exits.",
-                    )
-                } else {
-                    registry_io(&path, error)
-                }
-            })?;
-        Ok(Self(path))
+            .map_err(|error| registry_io(&path, error))?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| registry_io(&path, error))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(corrupt(
+                "Registry lock path is not a regular file",
+                json!({"path":path_text(&path)}),
+            ));
+        }
+        if !lock_file_matches_path(&file, &path)? {
+            return Err(corrupt(
+                "Registry lock path changed while it was being opened",
+                json!({"path":path_text(&path)}),
+            ));
+        }
+        file.try_lock_exclusive().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                ApiError::new(
+                    "registry_busy",
+                    "Another registry operation is already updating this workspace",
+                    json!({}),
+                    "Retry after the other prof-mcp registry operation exits.",
+                )
+            } else {
+                registry_io(&path, error)
+            }
+        })?;
+        if !lock_file_matches_path(&file, &path)? {
+            return Err(corrupt(
+                "Registry lock path changed while it was being acquired",
+                json!({"path":path_text(&path)}),
+            ));
+        }
+        Ok(Self(file))
     }
 }
 impl Drop for RegistrationLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = FileExt::unlock(&self.0);
     }
+}
+
+#[cfg(unix)]
+fn lock_file_matches_path(file: &fs::File, path: &Path) -> Result<bool, ApiError> {
+    let opened = file.metadata().map_err(|error| registry_io(path, error))?;
+    let current = fs::symlink_metadata(path).map_err(|error| registry_io(path, error))?;
+    Ok(!current.file_type().is_symlink()
+        && current.file_type().is_file()
+        && opened.dev() == current.dev()
+        && opened.ino() == current.ino())
+}
+
+#[cfg(not(unix))]
+fn lock_file_matches_path(_file: &fs::File, path: &Path) -> Result<bool, ApiError> {
+    Err(ApiError::new(
+        "internal_error",
+        "Safe registry advisory locking is unavailable on this platform",
+        json!({"path":path_text(path)}),
+        "Run prof-mcp on a platform with stable lock-file identity checks.",
+    ))
 }
 
 fn unix_ms() -> u64 {
@@ -676,4 +788,28 @@ fn unix_ms() -> u64 {
         .ok()
         .and_then(|duration| u64::try_from(duration.as_millis()).ok())
         .unwrap_or(0)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{fs, fs::OpenOptions};
+
+    use super::lock_file_matches_path;
+    use tempfile::tempdir;
+
+    #[test]
+    fn lock_identity_rejects_a_replaced_regular_file() {
+        let root = tempdir().unwrap();
+        let lock = root.path().join(".register.lock");
+        let replacement = root.path().join("replacement.lock");
+        fs::write(&lock, "old").unwrap();
+        fs::write(&replacement, "new").unwrap();
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        fs::rename(&replacement, &lock).unwrap();
+        assert!(!lock_file_matches_path(&opened, &lock).unwrap());
+    }
 }

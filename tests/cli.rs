@@ -46,6 +46,15 @@ fn register_list_use_and_legacy_registration_are_compatible() {
             .unwrap()
             .contains("active alias=baseline")
     );
+    let gc = Command::new(binary)
+        .current_dir(workspace.path())
+        .args(["gc", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(gc.status.success());
+    let gc_stdout = String::from_utf8(gc.stdout).unwrap();
+    assert!(gc_stdout.contains("dry_run=true"));
+    assert!(gc_stdout.contains("registry="));
 }
 
 #[test]
@@ -62,7 +71,7 @@ fn serve_requires_explicit_mcp_flag_and_version_is_available() {
     assert!(
         String::from_utf8(version.stdout)
             .unwrap()
-            .contains("prof-mcp 0.3.0")
+            .contains("prof-mcp 0.4.0")
     );
 }
 

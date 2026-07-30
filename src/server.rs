@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::Result;
 use rmcp::{
@@ -19,9 +19,165 @@ use crate::{
     cache::{LoadedProfile, ProfileCache},
     config::Config,
     error::ApiError,
-    query::{self, DiffSort, FrameSelector, FrameWindow, MatchMode, TopSort},
+    query::{
+        self, DEFAULT_MAX_TOTAL_FRAMES, DiffSort, FrameSelector, FrameWindow, MatchMode, TopSort,
+    },
     registry,
 };
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct OutputProfile {
+    canonical_path: String,
+    fingerprint: String,
+    byte_len: u64,
+    modified_unix_ms: Option<u64>,
+    alias: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct TruncationReason {
+    kind: String,
+    #[serde(flatten)]
+    #[schemars(flatten)]
+    details: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct OutputEnvelope<T> {
+    schema_version: String,
+    profile: OutputProfile,
+    scope_weight: u64,
+    truncated: bool,
+    truncation_reasons: Vec<TruncationReason>,
+    warnings: Vec<String>,
+    data: T,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct TopData {
+    sort: String,
+    focus: Option<u32>,
+    rows: Vec<crate::output::FrameRow>,
+}
+type TopOutput = OutputEnvelope<TopData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct TotalFrameBudget {
+    limit: usize,
+    available: usize,
+    returned: usize,
+    omitted: usize,
+    selected_paths: usize,
+    returned_paths: usize,
+    omitted_paths: usize,
+    cropped_paths: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct PathRow {
+    frames: Vec<String>,
+    weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
+    target_positions: Vec<usize>,
+    display_target_positions: Vec<usize>,
+    total_depth: usize,
+    requested_frame_start: usize,
+    requested_frame_end: usize,
+    frame_start: usize,
+    frame_end: usize,
+    omitted_before: usize,
+    omitted_after: usize,
+    budget_omitted_before: usize,
+    budget_omitted_after: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct PathsData {
+    through: u32,
+    paths: Vec<PathRow>,
+    total_frame_budget: TotalFrameBudget,
+}
+type PathsOutput = OutputEnvelope<PathsData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct TreeNode {
+    node_id: Option<u32>,
+    frame_id: Option<u32>,
+    name: Option<String>,
+    self_weight: u64,
+    total_weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
+    omitted_children: usize,
+    omitted_weight: u64,
+    children: Vec<TreeNode>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct Continuation {
+    node_id: u32,
+    frame_id: u32,
+    name: String,
+    reason: String,
+    profile_fingerprint: String,
+    total_weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct TreeData {
+    root: TreeNode,
+    continuations: Vec<Continuation>,
+    continuations_truncated: bool,
+    continuation_limit: usize,
+    continuations_available: usize,
+    continuations_omitted: usize,
+}
+type TreeOutput = OutputEnvelope<TreeData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct DirectionData {
+    frame: crate::output::FrameRow,
+    root: TreeNode,
+}
+type DirectionOutput = OutputEnvelope<DirectionData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct DiffRow {
+    name: String,
+    baseline_weight: u64,
+    candidate_weight: u64,
+    baseline_percent: f64,
+    candidate_percent: f64,
+    delta_pp: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct DiffData {
+    metric: String,
+    sort: String,
+    rows: Vec<DiffRow>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct DiffScopeWeight {
+    baseline: u64,
+    candidate: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct DiffOutput {
+    schema_version: String,
+    baseline: OutputProfile,
+    candidate: OutputProfile,
+    scope_weight: DiffScopeWeight,
+    truncated: bool,
+    truncation_reasons: Vec<TruncationReason>,
+    warnings: Vec<String>,
+    data: DiffData,
+}
 
 pub struct ProfileServer {
     cache: Arc<ProfileCache>,
@@ -220,6 +376,9 @@ pub struct PathsInput {
     #[serde(default = "default_paths_limit")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: usize,
+    #[serde(default = "default_max_total_frames")]
+    #[schemars(range(min = 1, max = 5000))]
+    pub max_total_frames: usize,
     pub frame_window: Option<FrameWindowInput>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -297,6 +456,9 @@ fn default_tree_percent() -> f64 {
 fn default_paths_limit() -> usize {
     10
 }
+fn default_max_total_frames() -> usize {
+    DEFAULT_MAX_TOTAL_FRAMES
+}
 fn default_diff_limit() -> usize {
     30
 }
@@ -348,20 +510,51 @@ fn single_output_schema() -> Arc<serde_json::Map<String, Value>> {
         serde_json::json!({"type":"integer","minimum":0}),
     )
 }
-fn diff_output_schema() -> Arc<serde_json::Map<String, Value>> {
-    output_schema(
-        &[
-            "schema_version",
-            "baseline",
-            "candidate",
-            "scope_weight",
-            "truncated",
-            "truncation_reasons",
-            "warnings",
-            "data",
-        ],
-        serde_json::json!({"type":"object","properties":{"baseline":{"type":"integer","minimum":0},"candidate":{"type":"integer","minimum":0}},"required":["baseline","candidate"]}),
-    )
+fn typed_output_schema<T: JsonSchema>() -> Arc<serde_json::Map<String, Value>> {
+    let mut schema = serde_json::to_value(schemars::schema_for!(T))
+        .expect("static output schema serializes")
+        .as_object()
+        .expect("static output schema is object")
+        .clone();
+    let required = schema
+        .remove("required")
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let properties = schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("derived output schema has properties");
+    properties.insert(
+        "schema_version".into(),
+        json!({"type":"string","const":"2"}),
+    );
+    properties.insert("code".into(), json!({"type":"string"}));
+    properties.insert("message".into(), json!({"type":"string"}));
+    properties.insert("details".into(), json!({}));
+    properties.insert("retry_hint".into(), json!({"type":"string"}));
+    schema.insert(
+        "anyOf".into(),
+        json!([
+            {"required":required},
+            {"required":["code","message","details","retry_hint"]}
+        ]),
+    );
+    schema.into()
+}
+
+fn typed_output<T>(value: Value) -> Result<Value, ApiError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let typed: T = serde_json::from_value(value).map_err(|error| {
+        ApiError::new(
+            "internal_error",
+            format!("Internal typed output contract mismatch: {error}"),
+            json!({}),
+            "Retry the query; if it persists, report the profile and arguments.",
+        )
+    })?;
+    serde_json::to_value(typed)
+        .map_err(|_| ApiError::internal("Could not serialize typed tool output"))
 }
 
 #[tool_router]
@@ -409,7 +602,7 @@ impl ProfileServer {
             Err(error) => failure(error),
         }
     }
-    #[tool(description = "Rank self or inclusive folded-frame weights.", output_schema = single_output_schema())]
+    #[tool(description = "Rank self or inclusive folded-frame weights.", output_schema = typed_output_schema::<TopOutput>())]
     async fn profile_top(&self, Parameters(input): Parameters<TopInput>) -> CallToolResult {
         let focus = input.focus.map(FrameSelector::from);
         match self
@@ -423,7 +616,7 @@ impl ProfileServer {
                     focus.as_ref(),
                     input.name_regex.as_deref(),
                 )
-                .map(|value| tag_alias(value, &loaded.alias))
+                .and_then(|value| typed_output::<TopOutput>(tag_alias(value, &loaded.alias)))
             }) {
             Ok(value) => success(
                 value,
@@ -432,7 +625,7 @@ impl ProfileServer {
             Err(error) => failure(error),
         }
     }
-    #[tool(description = "Expand one deterministic top-down CCT node.", output_schema = single_output_schema())]
+    #[tool(description = "Expand one deterministic top-down CCT node.", output_schema = typed_output_schema::<TreeOutput>())]
     async fn profile_tree(&self, Parameters(input): Parameters<TreeInput>) -> CallToolResult {
         match self
             .profile(input.profile.as_deref())
@@ -446,7 +639,7 @@ impl ProfileServer {
                     input.max_nodes,
                     input.min_scope_percent,
                 )
-                .map(|value| tag_alias(value, &loaded.alias))
+                .and_then(|value| typed_output::<TreeOutput>(tag_alias(value, &loaded.alias)))
             }) {
             Ok(value) => success(
                 value,
@@ -455,7 +648,7 @@ impl ProfileServer {
             Err(error) => failure(error),
         }
     }
-    #[tool(description = "Show callers of one exact folded-frame identity.", output_schema = single_output_schema())]
+    #[tool(description = "Show callers of one exact folded-frame identity.", output_schema = typed_output_schema::<DirectionOutput>())]
     async fn profile_callers(
         &self,
         Parameters(input): Parameters<DirectionInput>,
@@ -472,7 +665,7 @@ impl ProfileServer {
                     input.max_nodes,
                     input.min_scope_percent,
                 )
-                .map(|value| tag_alias(value, &loaded.alias))
+                .and_then(|value| typed_output::<DirectionOutput>(tag_alias(value, &loaded.alias)))
             }) {
             Ok(value) => success(
                 value,
@@ -481,7 +674,7 @@ impl ProfileServer {
             Err(error) => failure(error),
         }
     }
-    #[tool(description = "Show callees of one exact folded-frame identity.", output_schema = single_output_schema())]
+    #[tool(description = "Show callees of one exact folded-frame identity.", output_schema = typed_output_schema::<DirectionOutput>())]
     async fn profile_callees(
         &self,
         Parameters(input): Parameters<DirectionInput>,
@@ -498,7 +691,7 @@ impl ProfileServer {
                     input.max_nodes,
                     input.min_scope_percent,
                 )
-                .map(|value| tag_alias(value, &loaded.alias))
+                .and_then(|value| typed_output::<DirectionOutput>(tag_alias(value, &loaded.alias)))
             }) {
             Ok(value) => success(
                 value,
@@ -507,7 +700,7 @@ impl ProfileServer {
             Err(error) => failure(error),
         }
     }
-    #[tool(description = "Return heavy complete stacks through one exact frame.", output_schema = single_output_schema())]
+    #[tool(description = "Return heavy complete stacks through one exact frame.", output_schema = typed_output_schema::<PathsOutput>())]
     async fn profile_paths(&self, Parameters(input): Parameters<PathsInput>) -> CallToolResult {
         let through = FrameSelector::from(input.through);
         let frame_window = input.frame_window.map(FrameWindow::from);
@@ -515,8 +708,14 @@ impl ProfileServer {
             .profile(input.profile.as_deref())
             .await
             .and_then(|loaded| {
-                query::paths_with_window(&loaded.profile, &through, input.limit, frame_window)
-                    .map(|value| tag_alias(value, &loaded.alias))
+                query::paths_with_window_budget(
+                    &loaded.profile,
+                    &through,
+                    input.limit,
+                    frame_window,
+                    input.max_total_frames,
+                )
+                .and_then(|value| typed_output::<PathsOutput>(tag_alias(value, &loaded.alias)))
             }) {
             Ok(value) => success(
                 value,
@@ -525,7 +724,7 @@ impl ProfileServer {
             Err(error) => failure(error),
         }
     }
-    #[tool(description = "Compare exact frame names between two folded profiles.", output_schema = diff_output_schema())]
+    #[tool(description = "Compare exact frame names between two folded profiles.", output_schema = typed_output_schema::<DiffOutput>())]
     async fn profile_diff(&self, Parameters(input): Parameters<DiffInput>) -> CallToolResult {
         match async {
             let baseline = self.profile(Some(&input.baseline)).await?;
@@ -538,7 +737,13 @@ impl ProfileServer {
                 input.limit,
                 input.name_regex.as_deref(),
             )
-            .map(|value| tag_diff_aliases(value, &baseline.alias, &candidate.alias))
+            .and_then(|value| {
+                typed_output::<DiffOutput>(tag_diff_aliases(
+                    value,
+                    &baseline.alias,
+                    &candidate.alias,
+                ))
+            })
         }
         .await
         {

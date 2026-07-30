@@ -254,6 +254,105 @@ fn path_windows_crop_display_only_and_keep_all_recursive_positions() {
 }
 
 #[test]
+fn paths_total_frame_budget_is_ordered_bounded_and_reports_requested_ranges() {
+    let profile = support::profile("root;a;b;foo;c;d;e 10\nroot;x;foo;y;z 5\n");
+    let foo = support::frame(&profile, "foo");
+    let selector = FrameSelector {
+        frame_id: Some(foo),
+        frame_name: None,
+    };
+    let bounded = query::paths_with_window_budget(&profile, &selector, 10, None, 5).unwrap();
+    let paths = bounded["data"]["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(
+        paths[0]["frames"],
+        serde_json::json!(["a", "b", "foo", "c", "d"])
+    );
+    assert_eq!(paths[0]["target_positions"], serde_json::json!([3]));
+    assert_eq!(paths[0]["display_target_positions"], serde_json::json!([2]));
+    assert_eq!(paths[0]["requested_frame_start"], 0);
+    assert_eq!(paths[0]["requested_frame_end"], 7);
+    assert_eq!(paths[0]["frame_start"], 1);
+    assert_eq!(paths[0]["frame_end"], 6);
+    assert_eq!(paths[0]["budget_omitted_before"], 1);
+    assert_eq!(paths[0]["budget_omitted_after"], 1);
+    assert_eq!(
+        bounded["data"]["total_frame_budget"],
+        serde_json::json!({
+            "limit":5,
+            "available":12,
+            "returned":5,
+            "omitted":7,
+            "selected_paths":2,
+            "returned_paths":1,
+            "omitted_paths":1,
+            "cropped_paths":1,
+        })
+    );
+    assert_eq!(
+        bounded["truncation_reasons"][0]["kind"],
+        "total_frame_budget"
+    );
+
+    let exact_row = query::paths_with_window_budget(&profile, &selector, 10, None, 7).unwrap();
+    assert_eq!(exact_row["data"]["paths"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        exact_row["data"]["paths"][0]["frames"],
+        serde_json::json!(["root", "a", "b", "foo", "c", "d", "e"])
+    );
+    assert_eq!(
+        exact_row["data"]["total_frame_budget"],
+        serde_json::json!({
+            "limit":7,
+            "available":12,
+            "returned":7,
+            "omitted":5,
+            "selected_paths":2,
+            "returned_paths":1,
+            "omitted_paths":1,
+            "cropped_paths":0,
+        })
+    );
+    assert_eq!(
+        exact_row["truncation_reasons"][0]["kind"],
+        "total_frame_budget"
+    );
+
+    let head = query::paths_with_window_budget(
+        &profile,
+        &selector,
+        10,
+        Some(FrameWindow::Head { lines: 7 }),
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        head["data"]["paths"][0]["frames"],
+        serde_json::json!(["root", "a", "b"])
+    );
+    let tail = query::paths_with_window_budget(
+        &profile,
+        &selector,
+        10,
+        Some(FrameWindow::Tail { lines: 7 }),
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        tail["data"]["paths"][0]["frames"],
+        serde_json::json!(["c", "d", "e"])
+    );
+    for invalid in [0, 5_001] {
+        assert_eq!(
+            query::paths_with_window_budget(&profile, &selector, 10, None, invalid)
+                .unwrap_err()
+                .code,
+            "invalid_budget"
+        );
+    }
+}
+
+#[test]
 fn path_windows_cover_root_leaf_and_multi_stack_boundaries_without_changing_selection() {
     let profile = support::profile("foo;middle;leaf 2\nroot;foo;branch 10\nroot;x;foo;branch 20\n");
     let foo = support::frame(&profile, "foo");
