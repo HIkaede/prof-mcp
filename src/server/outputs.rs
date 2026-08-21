@@ -1,0 +1,260 @@
+//! Typed tool-output envelopes and JSON-Schema builders.
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+
+use crate::error::ApiError;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct OutputProfile {
+    canonical_path: String,
+    fingerprint: String,
+    byte_len: u64,
+    modified_unix_ms: Option<u64>,
+    alias: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct TruncationReason {
+    kind: String,
+    #[serde(flatten)]
+    #[schemars(flatten)]
+    details: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct OutputEnvelope<T> {
+    schema_version: String,
+    profile: OutputProfile,
+    scope_weight: u64,
+    truncated: bool,
+    truncation_reasons: Vec<TruncationReason>,
+    warnings: Vec<String>,
+    data: T,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct TopData {
+    sort: String,
+    focus: Option<u32>,
+    rows: Vec<crate::output::FrameRow>,
+}
+pub(crate) type TopOutput = OutputEnvelope<TopData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct TotalFrameBudget {
+    limit: usize,
+    available: usize,
+    returned: usize,
+    omitted: usize,
+    selected_paths: usize,
+    returned_paths: usize,
+    omitted_paths: usize,
+    cropped_paths: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct PathRow {
+    frames: Vec<String>,
+    weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
+    target_positions: Vec<usize>,
+    display_target_positions: Vec<usize>,
+    total_depth: usize,
+    requested_frame_start: usize,
+    requested_frame_end: usize,
+    frame_start: usize,
+    frame_end: usize,
+    omitted_before: usize,
+    omitted_after: usize,
+    budget_omitted_before: usize,
+    budget_omitted_after: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct PathsData {
+    through: u32,
+    paths: Vec<PathRow>,
+    total_frame_budget: TotalFrameBudget,
+}
+pub(crate) type PathsOutput = OutputEnvelope<PathsData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct TreeNode {
+    node_id: Option<u32>,
+    frame_id: Option<u32>,
+    name: Option<String>,
+    self_weight: u64,
+    total_weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
+    omitted_children: usize,
+    omitted_weight: u64,
+    children: Vec<TreeNode>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct Continuation {
+    node_id: u32,
+    frame_id: u32,
+    name: String,
+    reason: String,
+    profile_fingerprint: String,
+    total_weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct TreeData {
+    root: TreeNode,
+    continuations: Vec<Continuation>,
+    continuations_truncated: bool,
+    continuation_limit: usize,
+    continuations_available: usize,
+    continuations_omitted: usize,
+}
+pub(crate) type TreeOutput = OutputEnvelope<TreeData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct DirectionData {
+    frame: crate::output::FrameRow,
+    root: TreeNode,
+}
+pub(crate) type DirectionOutput = OutputEnvelope<DirectionData>;
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct DiffRow {
+    name: String,
+    baseline_weight: u64,
+    candidate_weight: u64,
+    baseline_percent: f64,
+    candidate_percent: f64,
+    delta_pp: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct DiffData {
+    metric: String,
+    sort: String,
+    rows: Vec<DiffRow>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct DiffScopeWeight {
+    baseline: u64,
+    candidate: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct DiffOutput {
+    schema_version: String,
+    baseline: OutputProfile,
+    candidate: OutputProfile,
+    scope_weight: DiffScopeWeight,
+    truncated: bool,
+    truncation_reasons: Vec<TruncationReason>,
+    warnings: Vec<String>,
+    data: DiffData,
+}
+
+pub(crate) fn output_schema(
+    required: &[&str],
+    scope_weight: Value,
+) -> Arc<serde_json::Map<String, Value>> {
+    let profile = serde_json::json!({
+        "type":"object",
+        "properties":{"canonical_path":{"type":"string"},"fingerprint":{"type":"string"},"byte_len":{"type":"integer"},"modified_unix_ms":{"type":["integer","null"]},"alias":{"type":"string"}},
+        "required":["canonical_path","fingerprint","byte_len","modified_unix_ms","alias"]
+    });
+    let properties = serde_json::json!({
+        "schema_version":{"type":"string","const":"2"},
+        "profile":profile.clone(),
+        "baseline":profile.clone(),
+        "candidate":profile,
+        "scope_weight":scope_weight,
+        "truncated":{"type":"boolean"},
+        "truncation_reasons":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"}},"required":["kind"]}},
+        "warnings":{"type":"array","items":{"type":"string"}},
+        "data":{"type":"object"}
+    });
+    let error = serde_json::json!({
+        "type":"object",
+        "properties":{"code":{"type":"string"},"message":{"type":"string"},"details":{},"retry_hint":{"type":"string"}},
+        "required":["code","message","details","retry_hint"]
+    });
+    Arc::new(
+        serde_json::json!({
+            "type":"object",
+            "properties":properties,
+            "anyOf":[{"required":required},error]
+        })
+        .as_object()
+        .expect("static output schema is object")
+        .clone(),
+    )
+}
+pub(crate) fn single_output_schema() -> Arc<serde_json::Map<String, Value>> {
+    output_schema(
+        &[
+            "schema_version",
+            "profile",
+            "scope_weight",
+            "truncated",
+            "truncation_reasons",
+            "warnings",
+            "data",
+        ],
+        serde_json::json!({"type":"integer","minimum":0}),
+    )
+}
+pub(crate) fn typed_output_schema<T: JsonSchema>() -> Arc<serde_json::Map<String, Value>> {
+    let mut schema = serde_json::to_value(schemars::schema_for!(T))
+        .expect("static output schema serializes")
+        .as_object()
+        .expect("static output schema is object")
+        .clone();
+    let required = schema
+        .remove("required")
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let properties = schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("derived output schema has properties");
+    properties.insert(
+        "schema_version".into(),
+        json!({"type":"string","const":"2"}),
+    );
+    properties.insert("code".into(), json!({"type":"string"}));
+    properties.insert("message".into(), json!({"type":"string"}));
+    properties.insert("details".into(), json!({}));
+    properties.insert("retry_hint".into(), json!({"type":"string"}));
+    schema.insert(
+        "anyOf".into(),
+        json!([
+            {"required":required},
+            {"required":["code","message","details","retry_hint"]}
+        ]),
+    );
+    schema.into()
+}
+
+pub(crate) fn typed_output<T>(value: Value) -> Result<Value, ApiError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let typed: T = serde_json::from_value(value).map_err(|error| {
+        ApiError::new(
+            "internal_error",
+            format!("Internal typed output contract mismatch: {error}"),
+            json!({}),
+            "Retry the query; if it persists, report the profile and arguments.",
+        )
+    })?;
+    serde_json::to_value(typed)
+        .map_err(|_| ApiError::internal("Could not serialize typed tool output"))
+}
