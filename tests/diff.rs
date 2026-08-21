@@ -82,3 +82,49 @@ fn equal_percentages_with_different_raw_totals_keep_raw_weights() {
     assert_eq!(hot["candidate_weight"], 100);
     assert_eq!(hot["delta_pp"], 0.0);
 }
+
+#[test]
+fn diff_warns_when_total_weights_diverge() {
+    let baseline = support::profile("root;hot 100\n");
+    let candidate = support::profile("root;hot 250\n");
+    let result = query::diff(
+        &baseline,
+        &candidate,
+        TopSort::SelfWeight,
+        DiffSort::Regression,
+        10,
+        None,
+    )
+    .unwrap();
+    let ratio = result["data"]["total_weight_ratio"].as_f64().unwrap();
+    assert!((ratio - 2.5).abs() < 1e-9);
+    let warnings: Vec<&str> = result["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert!(warnings.iter().any(|warning| warning.contains("2.50x")));
+}
+
+#[test]
+fn diff_stays_quiet_when_totals_are_comparable() {
+    let baseline = support::profile("root;hot 100\n");
+    let candidate = support::profile("root;hot 110\n");
+    let result = query::diff(
+        &baseline,
+        &candidate,
+        TopSort::SelfWeight,
+        DiffSort::Regression,
+        10,
+        None,
+    )
+    .unwrap();
+    let warnings: Vec<&str> = result["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert_eq!(warnings.len(), 1);
+}

@@ -15,6 +15,10 @@ pub struct Cli {
     /// Alias for the backward-compatible PROFILE form.
     #[arg(long, value_name = "ALIAS", requires = "profile")]
     pub name: Option<String>,
+    /// Optional sampling period in microseconds, recorded so queries can
+    /// report estimated time per weight unit.
+    #[arg(long, value_name = "US", requires = "profile")]
+    pub sample_period_us: Option<u64>,
     /// Maximum accepted profile file size in MiB.
     #[arg(long, default_value_t = 512, global = true)]
     pub max_file_size_mib: u64,
@@ -46,6 +50,9 @@ pub enum Command {
         profile: std::path::PathBuf,
         #[arg(long, value_name = "ALIAS")]
         name: Option<String>,
+        /// Optional sampling period in microseconds for estimated-time output.
+        #[arg(long, value_name = "US")]
+        sample_period_us: Option<u64>,
     },
     /// List the registry root, active alias, and registered profiles.
     List,
@@ -66,6 +73,7 @@ pub enum Command {
 pub struct Config {
     pub profile: Option<std::path::PathBuf>,
     pub name: Option<String>,
+    pub sample_period_us: Option<u64>,
     pub max_file_size_mib: u64,
     pub cache_capacity: usize,
     pub log_level: String,
@@ -76,6 +84,7 @@ impl From<&Cli> for Config {
         Self {
             profile: None,
             name: None,
+            sample_period_us: cli.sample_period_us,
             max_file_size_mib: cli.max_file_size_mib,
             cache_capacity: cli.cache_capacity,
             log_level: cli.log_level.clone(),

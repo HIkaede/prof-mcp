@@ -59,6 +59,7 @@ pub fn tree(
         continuations: &mut continuations,
         continuation_count: &mut continuation_count,
         continuation_limit: 128,
+        frame_path: Vec::new(),
     };
     let (node, _) = render_cct(profile, root_node_id, 0, &mut render);
     let continuations_truncated = continuation_count > continuations.len();

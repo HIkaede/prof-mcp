@@ -93,12 +93,14 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
         &root.path().join("sample.folded"),
         Some("sample"),
         1024 * 1024,
+        None,
     )
     .unwrap();
     let server = ProfileServer::new_in_workspace(
         Config {
             profile: None,
             name: None,
+            sample_period_us: None,
             max_file_size_mib: 1,
             cache_capacity: 2,
             log_level: "warn".into(),
@@ -465,6 +467,7 @@ async fn mcp_stays_available_without_registry_and_observes_registration_after_st
         Config {
             profile: None,
             name: None,
+            sample_period_us: None,
             max_file_size_mib: 1,
             cache_capacity: 2,
             log_level: "warn".into(),
@@ -491,7 +494,14 @@ async fn mcp_stays_available_without_registry_and_observes_registration_after_st
 
     let source = workspace.path().join("started.folded");
     fs::write(&source, "root;visible 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("visible"), 1024 * 1024).unwrap();
+    registry::register(
+        workspace.path(),
+        &source,
+        Some("visible"),
+        1024 * 1024,
+        None,
+    )
+    .unwrap();
     let available = client
         .call_tool(CallToolRequestParams::new("profile_summary"))
         .await

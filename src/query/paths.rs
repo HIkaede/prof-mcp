@@ -95,23 +95,46 @@ pub fn paths_with_window_budget(
             .filter(|position| **position >= frame_start && **position < frame_end)
             .map(|position| *position - frame_start)
             .collect();
-        rows.push(json!({
-            "frames":frame_sequence(profile,&stack.frames[frame_start..frame_end]),
-            "weight":stack.weight,
-            "profile_percent":percent(stack.weight,profile.total_weight),
-            "scope_percent":percent(stack.weight,scope),
-            "target_positions":positions,
-            "display_target_positions":display_target_positions,
-            "total_depth":total_depth,
-            "requested_frame_start":requested_frame_start,
-            "requested_frame_end":requested_frame_end,
-            "frame_start":frame_start,
-            "frame_end":frame_end,
-            "omitted_before":frame_start,
-            "omitted_after":total_depth-frame_end,
-            "budget_omitted_before":frame_start-requested_frame_start,
-            "budget_omitted_after":requested_frame_end-frame_end,
-        }));
+        let mut row = serde_json::Map::new();
+        row.insert(
+            "frames".into(),
+            json!(frame_sequence(
+                profile,
+                &stack.frames[frame_start..frame_end]
+            )),
+        );
+        row.insert("weight".into(), json!(stack.weight));
+        row.insert(
+            "profile_percent".into(),
+            json!(percent(stack.weight, profile.total_weight)),
+        );
+        row.insert("scope_percent".into(), json!(percent(stack.weight, scope)));
+        row.insert("target_positions".into(), json!(positions));
+        row.insert(
+            "display_target_positions".into(),
+            json!(display_target_positions),
+        );
+        row.insert("total_depth".into(), json!(total_depth));
+        let cropped = requested_frame_start != frame_start || requested_frame_end != frame_end;
+        if window.is_some() || cropped {
+            row.insert("requested_frame_start".into(), json!(requested_frame_start));
+            row.insert("requested_frame_end".into(), json!(requested_frame_end));
+        }
+        row.insert("frame_start".into(), json!(frame_start));
+        row.insert("frame_end".into(), json!(frame_end));
+        let omitted_before = frame_start;
+        let omitted_after = total_depth - frame_end;
+        if omitted_before > 0 || omitted_after > 0 {
+            row.insert("omitted_before".into(), json!(omitted_before));
+            row.insert("omitted_after".into(), json!(omitted_after));
+        }
+        let budget_omitted_before = frame_start - requested_frame_start;
+        let budget_omitted_after = requested_frame_end - frame_end;
+        if budget_omitted_before > 0 || budget_omitted_after > 0 {
+            row.insert("budget_omitted_before".into(), json!(budget_omitted_before));
+            row.insert("budget_omitted_after".into(), json!(budget_omitted_after));
+        }
+        rows.push(Value::Object(row));
     }
     if window_cropped_paths > 0 {
         truncation_reasons.push(json!({

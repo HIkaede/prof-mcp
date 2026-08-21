@@ -9,7 +9,7 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
     let source = workspace.path().join("first.folded");
     let input = b"root;A 3\r\nroot;B 4\n";
     fs::write(&source, input).unwrap();
-    let first = registry::register(workspace.path(), &source, None, 1024).unwrap();
+    let first = registry::register(workspace.path(), &source, None, 1024, None).unwrap();
     assert_eq!(first.alias, "first");
     assert_eq!(fs::read(&source).unwrap(), input);
     let registered = workspace
@@ -22,7 +22,8 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
         "# prof-mcp data files are local to this workspace.\n# Keep this file visible so the registry directory can be intentionally ignored.\n*\n!.gitignore\n"
     );
 
-    let second = registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+    let second =
+        registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
     assert_eq!(second.fingerprint, first.fingerprint);
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
@@ -38,7 +39,7 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
 
     fs::write(&source, b"root;new 1\n").unwrap();
     let replacement =
-        registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+        registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
     )
@@ -71,19 +72,19 @@ fn registration_rejects_invalid_alias_regular_file_and_size_without_manifest() {
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("bad/slash"), 1024)
+        registry::register(workspace.path(), &source, Some("bad/slash"), 1024, None)
             .unwrap_err()
             .code,
         "invalid_profile_alias"
     );
     assert_eq!(
-        registry::register(workspace.path(), workspace.path(), Some("dir"), 1024)
+        registry::register(workspace.path(), workspace.path(), Some("dir"), 1024, None)
             .unwrap_err()
             .code,
         "not_a_regular_file"
     );
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("big"), 1)
+        registry::register(workspace.path(), &source, Some("big"), 1, None)
             .unwrap_err()
             .code,
         "profile_too_large"
@@ -96,7 +97,7 @@ fn manifest_unknown_fields_and_escape_paths_are_rejected() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
     let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
@@ -113,7 +114,7 @@ fn manifest_absolute_and_parent_profile_paths_are_rejected() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
     let valid_manifest = fs::read(&manifest).unwrap();
     for escaped in ["../outside.folded", "/tmp/outside.folded"] {
@@ -136,7 +137,7 @@ fn discovery_finds_root_from_descendant() {
     fs::create_dir_all(&child).unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     assert_eq!(registry::resolve(&child, None).unwrap().alias, "base");
 }
 
@@ -150,7 +151,7 @@ fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() 
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     let lock = workspace.path().join(".prof-mcp/.register.lock");
     assert!(lock.exists());
     let lock_file = OpenOptions::new()
@@ -160,7 +161,7 @@ fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() 
         .unwrap();
     lock_file.lock_exclusive().unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("api"), 1024)
+        registry::register(workspace.path(), &source, Some("api"), 1024, None)
             .unwrap_err()
             .code,
         "registry_busy"
@@ -175,7 +176,7 @@ fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Another registry operation"));
     drop(lock_file);
-    registry::register(workspace.path(), &source, Some("api"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("api"), 1024, None).unwrap();
     assert!(lock.exists());
 }
 
@@ -185,7 +186,7 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
     let source = workspace.path().join("input.folded");
     let bytes = b"root;A 1\n";
     fs::write(&source, bytes).unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     let manifest_path = workspace.path().join(".prof-mcp/manifest.json");
     let valid_manifest = fs::read(&manifest_path).unwrap();
     let mut variants: Vec<serde_json::Value> = Vec::new();
@@ -221,7 +222,7 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
     fs::write(&failed_source, failed_bytes).unwrap();
     fs::write(&manifest_path, b"{").unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &failed_source, Some("new"), 1024)
+        registry::register(workspace.path(), &failed_source, Some("new"), 1024, None)
             .unwrap_err()
             .code,
         "registry_corrupt"
@@ -252,12 +253,12 @@ fn gc_only_removes_unreferenced_regular_profile_blobs_and_supports_dry_run() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     fs::write(&source, "root;B 2\n").unwrap();
     let old_candidate =
-        registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+        registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
     fs::write(&source, "root;C 3\n").unwrap();
-    registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
 
     let profiles = workspace.path().join(".prof-mcp/profiles");
     let manual_orphan = format!("{}.folded", "f".repeat(64));
@@ -331,7 +332,7 @@ fn registry_storage_symlinks_are_rejected_without_writing_outside_workspace() {
 
     symlink(outside.path(), workspace.path().join(".prof-mcp")).unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("base"), 1024)
+        registry::register(workspace.path(), &source, Some("base"), 1024, None)
             .unwrap_err()
             .code,
         "registry_corrupt"
@@ -342,7 +343,7 @@ fn registry_storage_symlinks_are_rejected_without_writing_outside_workspace() {
     fs::create_dir(workspace.path().join(".prof-mcp")).unwrap();
     symlink(outside.path(), workspace.path().join(".prof-mcp/profiles")).unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("base"), 1024)
+        registry::register(workspace.path(), &source, Some("base"), 1024, None)
             .unwrap_err()
             .code,
         "registry_corrupt"
@@ -359,7 +360,8 @@ fn registered_profile_file_symlink_is_rejected() {
     let outside = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    let registered = registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    let registered =
+        registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
     let file = workspace
         .path()
         .join(".prof-mcp/profiles")
@@ -385,7 +387,7 @@ fn non_utf8_profile_basename_registers_as_default_via_api_and_cli() {
         .join(OsString::from_vec(b"\xff.folded".to_vec()));
     let bytes = b"root;safe 1\n";
     fs::write(&source, bytes).unwrap();
-    let registration = registry::register(api_workspace.path(), &source, None, 1024).unwrap();
+    let registration = registry::register(api_workspace.path(), &source, None, 1024, None).unwrap();
     assert_eq!(registration.alias, "default");
     assert_eq!(fs::read(&source).unwrap(), bytes);
     let manifest: Manifest = serde_json::from_slice(
@@ -408,4 +410,23 @@ fn non_utf8_profile_basename_registers_as_default_via_api_and_cli() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("alias=default"));
     assert_eq!(fs::read(&cli_source).unwrap(), bytes);
+}
+
+#[test]
+fn registration_records_sample_period_and_rejects_zero() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("s.folded");
+    fs::write(&source, "root;a 5\n").unwrap();
+    let registration =
+        registry::register(workspace.path(), &source, Some("timed"), 1024, Some(250)).unwrap();
+    assert_eq!(registration.sample_period_us, Some(250));
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["profiles"]["timed"]["sample_period_us"], 250);
+    let resolved = registry::resolve(workspace.path(), None).unwrap();
+    assert_eq!(resolved.sample_period_us, Some(250));
+    let zero = registry::register(workspace.path(), &source, Some("zero"), 1024, Some(0));
+    assert_eq!(zero.unwrap_err().code, "invalid_sample_period");
 }

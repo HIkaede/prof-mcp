@@ -27,7 +27,11 @@ async fn main() -> Result<()> {
             }
             run_stdio(config).await
         }
-        Some(Command::Register { profile, name }) => register(&config, &profile, name.as_deref()),
+        Some(Command::Register {
+            profile,
+            name,
+            sample_period_us,
+        }) => register(&config, &profile, name.as_deref(), sample_period_us),
         Some(Command::List) => {
             let status = registry::status(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;
             println!("registry={}", status.registry_root.display());
@@ -72,23 +76,38 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => match cli.profile {
-            Some(profile) => register(&config, &profile, cli.name.as_deref()),
+            Some(profile) => register(&config, &profile, cli.name.as_deref(), cli.sample_period_us),
             None => setup::run(false),
         },
     }
 }
 
-fn register(config: &Config, profile: &std::path::Path, name: Option<&str>) -> Result<()> {
+fn register(
+    config: &Config,
+    profile: &std::path::Path,
+    name: Option<&str>,
+    sample_period_us: Option<u64>,
+) -> Result<()> {
+    if sample_period_us == Some(0) {
+        bail!("--sample-period-us must be a positive integer");
+    }
     let registration = registry::register(
         &std::env::current_dir()?,
         profile,
         name,
         config.max_file_size_bytes(),
+        sample_period_us,
     )
     .map_err(anyhow::Error::msg)?;
     println!(
-        "registered alias={} fingerprint={} bytes={}",
-        registration.alias, registration.fingerprint, registration.byte_len
+        "registered alias={} fingerprint={} bytes={} sample_period_us={}",
+        registration.alias,
+        registration.fingerprint,
+        registration.byte_len,
+        registration
+            .sample_period_us
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".into())
     );
     Ok(())
 }

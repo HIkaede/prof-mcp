@@ -13,6 +13,7 @@ use crate::{
 pub struct LoadedProfile {
     pub alias: String,
     pub profile: Arc<Profile>,
+    pub sample_period_us: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -84,6 +85,7 @@ impl ProfileCache {
                 return Ok(LoadedProfile {
                     alias: resolved.alias,
                     profile: entry.profile.clone(),
+                    sample_period_us: resolved.sample_period_us,
                 });
             }
         }
@@ -119,6 +121,7 @@ impl ProfileCache {
         Ok(LoadedProfile {
             alias: resolved.alias,
             profile,
+            sample_period_us: resolved.sample_period_us,
         })
     }
 

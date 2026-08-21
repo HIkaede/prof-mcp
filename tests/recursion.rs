@@ -17,6 +17,7 @@ fn diamond_and_shared_callee_use_each_stack_once() {
         5,
         64,
         0.0,
+        None,
     )
     .unwrap();
     let names: Vec<_> = callers["data"]["root"]["children"]
@@ -38,6 +39,7 @@ fn diamond_and_shared_callee_use_each_stack_once() {
         5,
         64,
         0.0,
+        None,
     )
     .unwrap();
     let names: Vec<_> = callees["data"]["root"]["children"]
@@ -63,6 +65,7 @@ fn recursive_anchors_are_leaf_most_for_callers_and_root_most_for_callees() {
         5,
         64,
         0.0,
+        None,
     )
     .unwrap();
     assert_eq!(callers["data"]["root"]["children"][0]["name"], "foo");
@@ -75,6 +78,7 @@ fn recursive_anchors_are_leaf_most_for_callers_and_root_most_for_callees() {
         5,
         64,
         0.0,
+        None,
     )
     .unwrap();
     assert_eq!(callees["data"]["root"]["children"][0]["name"], "foo");
@@ -82,4 +86,64 @@ fn recursive_anchors_are_leaf_most_for_callers_and_root_most_for_callees() {
         callees["data"]["root"]["children"][0]["children"][0]["name"],
         "bar"
     );
+}
+
+#[test]
+fn callers_truncation_emits_node_path_continuations_that_resume() {
+    let profile = support::profile("root;mid;deep;deeper;anchor 10\n");
+    let anchor = support::frame(&profile, "anchor");
+    let shallow = query::callers(
+        &profile,
+        &FrameSelector {
+            frame_id: Some(anchor),
+            frame_name: None,
+        },
+        1,
+        64,
+        0.0,
+        None,
+    )
+    .unwrap();
+    let continuations = shallow["data"]["continuations"].as_array().unwrap();
+    assert!(!continuations.is_empty());
+    let first = &continuations[0];
+    assert_eq!(first["profile_fingerprint"], profile.source.fingerprint);
+    assert!(first["node_path"].as_array().unwrap().len() >= 2);
+
+    let fingerprint = first["profile_fingerprint"].as_str().unwrap();
+    let node_path: Vec<u32> = first["node_path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_u64().unwrap() as u32)
+        .collect();
+    let resumed = query::callers(
+        &profile,
+        &FrameSelector {
+            frame_id: Some(anchor),
+            frame_name: None,
+        },
+        2,
+        64,
+        0.0,
+        Some((node_path.as_slice(), fingerprint)),
+    )
+    .unwrap();
+    assert_eq!(resumed["data"]["root"]["name"], first["name"]);
+    assert_eq!(resumed["scope_weight"], first["total_weight"]);
+}
+
+#[test]
+fn callers_continuation_rejects_wrong_fingerprint_and_bad_paths() {
+    let profile = support::profile("root;mid;anchor 10\n");
+    let anchor = support::frame(&profile, "anchor");
+    let selector = FrameSelector {
+        frame_id: Some(anchor),
+        frame_name: None,
+    };
+    let error =
+        query::callers(&profile, &selector, 1, 8, 0.0, Some((&[999], "wrong"))).unwrap_err();
+    assert_eq!(error.code, "profile_changed");
+    let empty = query::callers(&profile, &selector, 1, 8, 0.0, Some((&[], "x"))).unwrap_err();
+    assert_eq!(empty.code, "invalid_node_id");
 }

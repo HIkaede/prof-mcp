@@ -37,6 +37,7 @@ pub fn envelope(
         "truncated":!truncation_reasons.is_empty(),
         "truncation_reasons":truncation_reasons,
         "warnings":warnings,
+        "next_steps":[],
         "data":data
     })
 }

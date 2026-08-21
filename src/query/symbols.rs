@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+
 use hashbrown::{HashMap, HashSet};
 use serde_json::{Value, json};
 
 use super::{
     ApiError, FrameId, MatchMode, Profile, TopSort, check_limit, compile_regex, envelope,
-    frame_order, frame_row, row_limit_reason,
+    frame_order, frame_row, normalize_frame_name, row_limit_reason,
 };
 
 pub fn find_symbols(
@@ -11,6 +13,7 @@ pub fn find_symbols(
     query: &str,
     mode: MatchMode,
     limit: usize,
+    normalize: bool,
 ) -> Result<Value, ApiError> {
     check_limit(limit, 1, 100, "limit")?;
     let regex = match mode {
@@ -23,6 +26,9 @@ pub fn find_symbols(
             None => profile.frame_name(*id).contains(query),
         })
         .collect();
+    if normalize {
+        return find_symbols_grouped(profile, query, mode, limit, ids);
+    }
     ids.sort_by(|a, b| frame_order(profile, *a, *b, TopSort::Inclusive));
     let available = ids.len();
     let truncation_reasons = row_limit_reason(limit, available);
@@ -55,6 +61,75 @@ pub fn find_symbols(
         truncation_reasons,
         warnings,
         json!({"query":query,"mode":match mode {MatchMode::Contains=>"contains",MatchMode::Regex=>"regex"},"symbol_metadata":"folded_frames_and_observed_context_only","matches":rows}),
+    ))
+}
+
+fn find_symbols_grouped(
+    profile: &Profile,
+    query: &str,
+    mode: MatchMode,
+    limit: usize,
+    ids: Vec<FrameId>,
+) -> Result<Value, ApiError> {
+    struct Group {
+        members: Vec<FrameId>,
+        self_weight: u64,
+        inclusive_weight: u64,
+    }
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    for id in ids {
+        let key = normalize_frame_name(profile.frame_name(id));
+        let stats = &profile.frame_stats[id as usize];
+        let group = groups.entry(key).or_insert(Group {
+            members: Vec::new(),
+            self_weight: 0,
+            inclusive_weight: 0,
+        });
+        group.members.push(id);
+        group.self_weight += stats.self_weight;
+        group.inclusive_weight += stats.inclusive_weight;
+    }
+    let mut rows: Vec<(String, Group)> = groups.into_iter().collect();
+    rows.sort_by(|(left_name, left), (right_name, right)| {
+        right
+            .inclusive_weight
+            .cmp(&left.inclusive_weight)
+            .then_with(|| left_name.cmp(right_name))
+    });
+    let available = rows.len();
+    let truncation_reasons = row_limit_reason(limit, available);
+    rows.truncate(limit);
+    let warnings = if rows.is_empty() {
+        vec!["No exact frame identities matched; try a broader contains query or profile_find_symbols regex.".into()]
+    } else {
+        Vec::new()
+    };
+    let matches: Vec<_> = rows
+        .into_iter()
+        .map(|(normalized_name, group)| {
+            let mut members: Vec<String> = group
+                .members
+                .iter()
+                .map(|id| profile.frame_name(*id).to_string())
+                .collect();
+            members.sort();
+            members.truncate(5);
+            json!({
+                "normalized_name":normalized_name,
+                "member_count":group.members.len(),
+                "members":members,
+                "self_weight":group.self_weight,
+                "inclusive_weight":group.inclusive_weight,
+                "profile_percent":super::percent(group.inclusive_weight,profile.total_weight)
+            })
+        })
+        .collect();
+    Ok(envelope(
+        profile,
+        profile.total_weight,
+        truncation_reasons,
+        warnings,
+        json!({"query":query,"mode":match mode {MatchMode::Contains=>"contains",MatchMode::Regex=>"regex"},"symbol_metadata":"folded_frames_and_observed_context_only","matches":matches}),
     ))
 }
 

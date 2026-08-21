@@ -6,7 +6,20 @@ use serde_json::{Value, json};
 use crate::error::ApiError;
 use crate::registry;
 
-pub(crate) fn success(value: Value, text: &str) -> CallToolResult {
+pub(crate) fn success(mut value: Value, text: &str, next_steps: &[&str]) -> CallToolResult {
+    if !next_steps.is_empty()
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert(
+            "next_steps".into(),
+            Value::Array(
+                next_steps
+                    .iter()
+                    .map(|step| Value::String((*step).to_string()))
+                    .collect(),
+            ),
+        );
+    }
     let mut result = CallToolResult::structured(value);
     let fallback = text_fallback(
         result
@@ -18,6 +31,23 @@ pub(crate) fn success(value: Value, text: &str) -> CallToolResult {
     result.content = vec![ContentBlock::text(fallback)];
     result
 }
+pub(crate) fn tag_weight_semantics(mut value: Value, sample_period_us: Option<u64>) -> Value {
+    if let (Some(period), Some(profile)) = (
+        sample_period_us,
+        value.get_mut("profile").and_then(Value::as_object_mut),
+    ) {
+        profile.insert(
+            "weight_semantics".into(),
+            json!({
+                "unit":"estimated_us",
+                "basis":"user_supplied_sample_period",
+                "sample_period_us":period
+            }),
+        );
+    }
+    value
+}
+
 pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
     if let Some(profile) = value.get_mut("profile").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(alias.into()));
@@ -237,6 +267,7 @@ mod text_tests {
                 source_name: "sample.folded".into(),
                 byte_len: 1,
                 registered_unix_ms: 0,
+                sample_period_us: None,
             })
             .collect();
         let value = tag_registry(

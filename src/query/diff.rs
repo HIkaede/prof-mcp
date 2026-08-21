@@ -45,7 +45,23 @@ pub fn diff(
     let available = rows.len();
     let truncation_reasons = row_limit_reason(limit, available);
     rows.truncate(limit);
+    let mut warnings =
+        vec!["Percentage-point changes do not prove causality or statistical significance.".into()];
+    let total_weight_ratio = total_weight_ratio(baseline.total_weight, candidate.total_weight);
+    if !(0.8..=1.25).contains(&total_weight_ratio) {
+        warnings.push(format!(
+            "Total weight differs by {:.2}x (baseline={}, candidate={}); delta_pp conflates relative share change with overall workload change.",
+            total_weight_ratio, baseline.total_weight, candidate.total_weight
+        ));
+    }
     Ok(
-        json!({"schema_version":SCHEMA_VERSION,"baseline":profile_meta(baseline),"candidate":profile_meta(candidate),"scope_weight":{"baseline":baseline.total_weight,"candidate":candidate.total_weight},"truncated":!truncation_reasons.is_empty(),"truncation_reasons":truncation_reasons,"warnings":["Percentage-point changes do not prove causality or statistical significance."],"data":{"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"sort":match sort {DiffSort::Regression=>"regression",DiffSort::Improvement=>"improvement",DiffSort::Absolute=>"absolute"},"rows":rows}}),
+        json!({"schema_version":SCHEMA_VERSION,"baseline":profile_meta(baseline),"candidate":profile_meta(candidate),"scope_weight":{"baseline":baseline.total_weight,"candidate":candidate.total_weight},"truncated":!truncation_reasons.is_empty(),"truncation_reasons":truncation_reasons,"warnings":warnings,"data":{"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"sort":match sort {DiffSort::Regression=>"regression",DiffSort::Improvement=>"improvement",DiffSort::Absolute=>"absolute"},"total_weight_ratio":total_weight_ratio,"rows":rows}}),
     )
+}
+
+fn total_weight_ratio(baseline_total: u64, candidate_total: u64) -> f64 {
+    if baseline_total == 0 || candidate_total == 0 {
+        return 1.0;
+    }
+    candidate_total as f64 / baseline_total as f64
 }

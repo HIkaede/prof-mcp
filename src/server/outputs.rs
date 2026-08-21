@@ -33,6 +33,8 @@ pub(crate) struct OutputEnvelope<T> {
     truncated: bool,
     truncation_reasons: Vec<TruncationReason>,
     warnings: Vec<String>,
+    #[serde(default)]
+    next_steps: Vec<String>,
     data: T,
 }
 
@@ -41,6 +43,20 @@ pub(crate) struct TopData {
     sort: String,
     focus: Option<u32>,
     rows: Vec<crate::output::FrameRow>,
+    #[serde(default)]
+    grouped_rows: Vec<GroupedFrameRow>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct GroupedFrameRow {
+    normalized_name: String,
+    member_count: usize,
+    members: Vec<String>,
+    self_weight: u64,
+    inclusive_weight: u64,
+    stack_count_sum: u32,
+    profile_percent: f64,
+    scope_percent: f64,
 }
 pub(crate) type TopOutput = OutputEnvelope<TopData>;
 
@@ -65,13 +81,19 @@ pub(crate) struct PathRow {
     target_positions: Vec<usize>,
     display_target_positions: Vec<usize>,
     total_depth: usize,
+    #[serde(default)]
     requested_frame_start: usize,
+    #[serde(default)]
     requested_frame_end: usize,
     frame_start: usize,
     frame_end: usize,
+    #[serde(default)]
     omitted_before: usize,
+    #[serde(default)]
     omitted_after: usize,
+    #[serde(default)]
     budget_omitted_before: usize,
+    #[serde(default)]
     budget_omitted_after: usize,
 }
 
@@ -124,6 +146,28 @@ pub(crate) type TreeOutput = OutputEnvelope<TreeData>;
 pub(crate) struct DirectionData {
     frame: crate::output::FrameRow,
     root: TreeNode,
+    #[serde(default)]
+    continuations: Vec<DirectionContinuation>,
+    #[serde(default)]
+    continuations_truncated: bool,
+    #[serde(default)]
+    continuation_limit: usize,
+    #[serde(default)]
+    continuations_available: usize,
+    #[serde(default)]
+    continuations_omitted: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct DirectionContinuation {
+    node_path: Vec<u32>,
+    frame_id: u32,
+    name: String,
+    reason: String,
+    profile_fingerprint: String,
+    total_weight: u64,
+    profile_percent: f64,
+    scope_percent: f64,
 }
 pub(crate) type DirectionOutput = OutputEnvelope<DirectionData>;
 
@@ -159,6 +203,8 @@ pub(crate) struct DiffOutput {
     truncated: bool,
     truncation_reasons: Vec<TruncationReason>,
     warnings: Vec<String>,
+    #[serde(default)]
+    next_steps: Vec<String>,
     data: DiffData,
 }
 

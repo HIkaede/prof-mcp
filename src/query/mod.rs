@@ -205,6 +205,30 @@ pub(crate) fn metric_weight(stats: &FrameStats, sort: TopSort) -> u64 {
     }
 }
 
+/// Strip balanced `<...>` template arguments from a folded frame name.
+///
+/// Falls back to the original name when stripping would erase it entirely or
+/// when brackets never rebalance (for example `operator<<`), so normalization
+/// never invents empty symbols or merges distinct operators.
+pub(crate) fn normalize_frame_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    for character in name.chars() {
+        match character {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(character),
+            _ => {}
+        }
+    }
+    let trimmed = out.trim_end();
+    if trimmed.is_empty() || depth != 0 {
+        name.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub(crate) struct RenderState<'a> {
     pub(crate) scope: u64,
     pub(crate) max_depth: usize,
@@ -214,6 +238,9 @@ pub(crate) struct RenderState<'a> {
     pub(crate) continuations: &'a mut Vec<Value>,
     pub(crate) continuation_count: &'a mut usize,
     pub(crate) continuation_limit: usize,
+    /// Frame-id path from the rendered root; maintained by [`render_temp`]
+    /// so omitted direction subtrees can be addressed by later requests.
+    pub(crate) frame_path: Vec<FrameId>,
 }
 
 #[derive(Clone, Copy, Default)]

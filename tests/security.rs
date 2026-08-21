@@ -8,7 +8,7 @@ async fn registry_resolves_only_registered_aliases_and_rejects_corruption() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("ok.folded");
     fs::write(&source, "root;safe 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("ok"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("ok"), 1024, None).unwrap();
     let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
     assert_eq!(cache.load(None).await.unwrap().alias, "ok");
     assert_eq!(
@@ -55,7 +55,7 @@ async fn non_utf8_workspace_path_returns_json_safe_profile_metadata() {
     fs::create_dir(&workspace).unwrap();
     let source = workspace.join("input.folded");
     fs::write(&source, "root;safe 1\n").unwrap();
-    registry::register(&workspace, &source, Some("safe"), 1024).unwrap();
+    registry::register(&workspace, &source, Some("safe"), 1024, None).unwrap();
     let cache = ProfileCache::new(workspace, 1024, 2).unwrap();
     let loaded = cache.load(None).await.unwrap();
     let summary = prof_mcp::query::summary(&loaded.profile);
