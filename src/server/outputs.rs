@@ -185,6 +185,8 @@ pub(crate) struct DiffRow {
 pub(crate) struct DiffData {
     metric: String,
     sort: String,
+    #[serde(default)]
+    total_weight_ratio: f64,
     rows: Vec<DiffRow>,
 }
 
