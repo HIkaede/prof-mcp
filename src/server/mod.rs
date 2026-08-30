@@ -11,8 +11,8 @@ use rmcp::{
     RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams,
-        ServerCapabilities, ServerInfo, Tool,
+        CacheScope, CallToolRequestParams, CallToolResponse, ListToolsResult,
+        PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
     },
     service::RequestContext,
 };
@@ -128,7 +128,7 @@ impl ServerHandler for ProfileServer {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
         let names = [
             "profile_summary",
@@ -140,13 +140,19 @@ impl ServerHandler for ProfileServer {
             "profile_paths",
             "profile_diff",
         ];
-        Ok(ListToolsResult {
-            tools: names
+        let mut result = ListToolsResult::with_all_items(
+            names
                 .iter()
                 .filter_map(|name| self.tool_router.get(name).cloned())
                 .collect(),
-            ..Default::default()
-        })
+        );
+        if context
+            .protocol_version()
+            .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28)
+        {
+            result = result.with_ttl_ms(0).with_cache_scope(CacheScope::Private);
+        }
+        Ok(result)
     }
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tool_router.get(name).cloned()

@@ -31,7 +31,8 @@ pub fn top(
         .iter()
         .map(|id| profile.stacks[*id as usize].weight)
         .sum();
-    let stats = subset_stats(profile, &stack_ids);
+    let scoped_stats = focused_id.map(|_| subset_stats(profile, &stack_ids));
+    let stats = scoped_stats.as_deref().unwrap_or(&profile.frame_stats);
     let regex = name_regex.map(compile_regex).transpose()?;
     let mut ids: Vec<_> = (0..profile.frames.len() as u32)
         .filter(|id| {
@@ -48,11 +49,11 @@ pub fn top(
             limit,
             focused_id,
             scope_weight,
-            &stats,
+            stats,
             &mut ids,
         );
     }
-    ids.sort_by(|a, b| frame_order_stats(profile, &stats, *a, *b, sort));
+    ids.sort_by(|a, b| frame_order_stats(profile, stats, *a, *b, sort));
     let available = ids.len();
     let truncation_reasons = row_limit_reason(limit, available);
     ids.truncate(limit);

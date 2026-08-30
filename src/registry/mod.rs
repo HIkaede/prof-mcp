@@ -81,6 +81,12 @@ pub struct GcReport {
     pub skipped: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct Removal {
+    pub alias: String,
+    pub active: String,
+}
+
 pub fn valid_alias(alias: &str) -> bool {
     let bytes = alias.as_bytes();
     (1..=64).contains(&bytes.len())
@@ -369,6 +375,95 @@ pub fn set_active(workspace: &Path, alias: &str) -> Result<RegistryStatus, ApiEr
     atomic_write_json(&state.join(MANIFEST), &manifest)?;
     drop(_lock);
     status(workspace)
+}
+
+pub fn remove(
+    workspace: &Path,
+    alias: &str,
+    new_active: Option<&str>,
+) -> Result<Removal, ApiError> {
+    if !valid_alias(alias) {
+        return Err(invalid_alias(alias));
+    }
+    let state = discover(workspace)?.ok_or_else(|| {
+        ApiError::new(
+            "workspace_not_registered",
+            "No .prof-mcp registry was found for this workspace",
+            json!({"cwd":path_text(workspace)}),
+            "Run prof-mcp register PATH from workspace root.",
+        )
+    })?;
+    ensure_registry_layout(&state)?;
+    let _lock = RegistrationLock::acquire(&state)?;
+    let mut manifest = read_manifest_required(&state)?;
+    validate_manifest(&manifest)?;
+    if !manifest.profiles.contains_key(alias) {
+        return Err(ApiError::new(
+            "profile_alias_not_found",
+            format!("No registered profile alias: {alias}"),
+            json!({"profile":alias,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+            "Run prof-mcp list and select an existing alias.",
+        ));
+    }
+    if manifest.profiles.len() == 1 {
+        return Err(ApiError::new(
+            "cannot_remove_last_alias",
+            "The last registered profile alias cannot be removed",
+            json!({"profile":alias}),
+            "Register a replacement profile before removing this alias.",
+        ));
+    }
+    let removing_active = manifest.active == alias;
+    let replacement = if removing_active {
+        let replacement = new_active.ok_or_else(|| {
+            ApiError::new(
+                "active_alias_requires_replacement",
+                "Removing the active alias requires --new-active",
+                json!({"profile":alias}),
+                "Pass --new-active with another registered alias.",
+            )
+        })?;
+        if !valid_alias(replacement) {
+            return Err(invalid_alias(replacement));
+        }
+        if replacement == alias {
+            return Err(ApiError::new(
+                "replacement_alias_same_as_removed",
+                "The replacement active alias must differ from the removed alias",
+                json!({"profile":alias}),
+                "Pass another registered alias with --new-active.",
+            ));
+        }
+        if !manifest.profiles.contains_key(replacement) {
+            return Err(ApiError::new(
+                "profile_alias_not_found",
+                format!("No registered replacement alias: {replacement}"),
+                json!({"profile":replacement,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+                "Run prof-mcp list and select an existing alias.",
+            ));
+        }
+        Some(replacement)
+    } else {
+        if new_active.is_some() {
+            return Err(ApiError::new(
+                "new_active_only_for_active_alias",
+                "--new-active is only valid when removing the active alias",
+                json!({"profile":alias}),
+                "Remove the flag or remove the active alias instead.",
+            ));
+        }
+        None
+    };
+    manifest.profiles.remove(alias);
+    if let Some(replacement) = replacement {
+        manifest.active = replacement.to_owned();
+    }
+    validate_manifest(&manifest)?;
+    atomic_write_json(&state.join(MANIFEST), &manifest)?;
+    Ok(Removal {
+        alias: alias.to_owned(),
+        active: manifest.active,
+    })
 }
 
 pub fn gc(workspace: &Path, dry_run: bool) -> Result<GcReport, ApiError> {

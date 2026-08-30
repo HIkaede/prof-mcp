@@ -46,6 +46,13 @@ fn register_list_use_and_legacy_registration_are_compatible() {
             .unwrap()
             .contains("active alias=baseline")
     );
+    let removed = Command::new(binary)
+        .current_dir(workspace.path())
+        .args(["remove", "candidate"])
+        .output()
+        .unwrap();
+    assert!(removed.status.success());
+    assert!(String::from_utf8_lossy(&removed.stdout).contains("removed alias=candidate"));
     let gc = Command::new(binary)
         .current_dir(workspace.path())
         .args(["gc", "--dry-run"])
@@ -55,6 +62,78 @@ fn register_list_use_and_legacy_registration_are_compatible() {
     let gc_stdout = String::from_utf8(gc.stdout).unwrap();
     assert!(gc_stdout.contains("dry_run=true"));
     assert!(gc_stdout.contains("registry="));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn capture_runs_perf_pipeline_and_registers_folded_output() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = tempdir().unwrap();
+    let bin_dir = workspace.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let perf = bin_dir.join("perf");
+    fs::write(
+        &perf,
+        "#!/bin/sh
+if [ \"$1\" = record ]; then
+  shift
+  while [ \"$1\" != -o ]; do shift; done
+  shift
+  : > \"$1\"
+  exit 0
+fi
+if [ \"$1\" = script ]; then
+  printf 'captured 123 1.000: 7 cpu/cycles/P:\\n'
+  printf '        7 leaf+0x4 (/bin/true)\\n'
+  printf '        8 caller (/bin/true)\\n\\n'
+  printf 'captured 123 2.000: 3 cpu/cycles/P:\\n'
+  printf '        7 leaf+0x4 (/bin/true)\\n'
+  printf '        8 caller (/bin/true)\\n'
+  exit 0
+fi
+exit 2
+",
+    )
+    .unwrap();
+    fs::set_permissions(&perf, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(workspace.path())
+        .args([
+            "capture",
+            "--name",
+            "captured",
+            "--sample-period-us",
+            "100",
+            "--",
+            "/bin/true",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("registered alias=captured"));
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(manifest["profiles"]["captured"].is_object());
+    assert_eq!(manifest["profiles"]["captured"]["sample_period_us"], 100);
+    let fingerprint = manifest["profiles"]["captured"]["fingerprint"]
+        .as_str()
+        .unwrap();
+    let folded = fs::read_to_string(
+        workspace
+            .path()
+            .join(".prof-mcp/profiles")
+            .join(format!("{fingerprint}.folded")),
+    )
+    .unwrap();
+    assert_eq!(folded, "captured;caller;leaf 10\n");
 }
 
 #[test]

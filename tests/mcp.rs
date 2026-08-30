@@ -3,7 +3,7 @@ use std::fs;
 use prof_mcp::{config::Config, registry, server::ProfileServer};
 use rmcp::{
     ClientHandler, ServiceExt,
-    model::{CallToolRequestParams, ClientInfo},
+    model::{CacheScope, CallToolRequestParams, ClientInfo, ProtocolVersion},
 };
 use serde::Deserialize;
 use tempfile::tempdir;
@@ -76,11 +76,13 @@ struct DiffData {
     rows: Vec<DiffRow>,
 }
 
-#[derive(Clone, Debug, Default)]
-struct TestClient;
+#[derive(Clone, Debug)]
+struct TestClient {
+    protocol_version: ProtocolVersion,
+}
 impl ClientHandler for TestClient {
     fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+        ClientInfo::default().with_protocol_version(self.protocol_version.clone())
     }
 }
 
@@ -113,8 +115,15 @@ async fn mcp_lists_exact_tools_with_object_schemas_and_returns_structured_result
         server.serve(server_transport).await?.waiting().await?;
         anyhow::Ok(())
     });
-    let client = TestClient.serve(client_transport).await.unwrap();
+    let client = TestClient {
+        protocol_version: ProtocolVersion::V_2026_07_28,
+    }
+    .serve(client_transport)
+    .await
+    .unwrap();
     let tools = client.list_tools(None).await.unwrap();
+    assert_eq!(tools.ttl_ms, Some(0));
+    assert_eq!(tools.cache_scope, Some(CacheScope::Private));
     let names: Vec<_> = tools.tools.iter().map(|tool| tool.name.as_ref()).collect();
     assert_eq!(
         names,
@@ -480,8 +489,16 @@ async fn mcp_stays_available_without_registry_and_observes_registration_after_st
         server.serve(server_transport).await?.waiting().await?;
         anyhow::Ok(())
     });
-    let client = TestClient.serve(client_transport).await.unwrap();
-    assert_eq!(client.list_tools(None).await.unwrap().tools.len(), 8);
+    let client = TestClient {
+        protocol_version: ProtocolVersion::V_2025_11_25,
+    }
+    .serve(client_transport)
+    .await
+    .unwrap();
+    let tools = client.list_tools(None).await.unwrap();
+    assert_eq!(tools.tools.len(), 8);
+    assert_eq!(tools.ttl_ms, None);
+    assert_eq!(tools.cache_scope, None);
     let unavailable = client
         .call_tool(CallToolRequestParams::new("profile_summary"))
         .await

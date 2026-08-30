@@ -3,12 +3,14 @@
 ## Scope
 
 `prof-mcp` is a Rust 2024, MSRV 1.88, workspace-local MCP server for folded
-stack profiles. Keep the implementation small and preserve the existing
-read-only query boundary.
+stack profiles, with a thin Linux CLI capture pipeline. Keep the implementation
+small and preserve the existing read-only query boundary.
 
-The product does not run profilers, read native `perf.data`, render SVG, run
-shell commands, or provide a TUI, HTTP, SQL, or DuckDB interface. Do not add
-these as implicit dependencies of the server or query tools.
+The MCP server and query tools do not run profilers, read native `perf.data`,
+render SVG, run shell commands, or provide a TUI, HTTP, SQL, or DuckDB
+interface. The explicit Linux `capture` CLI may invoke `perf` through direct
+argv only, parse `perf script` output in Rust, and register the resulting
+folded text. Do not add capture behavior to MCP request handling.
 
 ## Runtime contract
 
@@ -37,9 +39,12 @@ these as implicit dependencies of the server or query tools.
 - Validate profile size, manifest schema, aliases, fingerprints, source names,
   and registry paths before use. Reject symlinks, non-regular files, and paths
   that escape `.prof-mcp`.
-- Registry mutations (`register`, `use`, and `gc`) are serialized by the
+- Registry mutations (`register`, `use`, `remove`, and `gc`) are serialized by the
   persistent advisory lock. Preserve recoverable lock contention and fail
   closed where the platform cannot safely provide the required file identity.
+- `remove` deletes only a manifest alias. Removing the active alias requires an
+  existing replacement alias, and the last alias cannot be removed. Blob
+  deletion remains the responsibility of `gc`.
 - `gc` may remove only unreferenced, regular, fingerprint-named profile blobs;
   it must not rewrite the manifest or active alias. Keep `--dry-run`
   deterministic.
@@ -51,6 +56,10 @@ these as implicit dependencies of the server or query tools.
 
 - Direct invocation with no arguments runs Codex setup; an explicit profile
   argument remains the registration shorthand.
+- `capture` is Linux-only and must pass the target command directly to system
+  `perf`; it must not invoke a shell. It parses `perf script` output in Rust,
+  then reuses `registry::register`, preserving size, parser, alias, and
+  atomic-write checks.
 - `setup` may update the Codex MCP registration and the global
   `$CODEX_HOME/AGENTS.md`. It must be idempotent, support `--dry-run`, refuse
   conflicting custom registrations, and avoid a partial successful setup.
@@ -62,6 +71,8 @@ these as implicit dependencies of the server or query tools.
 - `src/profile/`: folded-input parsing, model construction, and limits.
 - `src/registry/`: workspace discovery, manifest validation, locking, and
   atomic persistence.
+- `src/capture.rs`: direct Linux perf/folding orchestration only; no profile
+  parsing or alternate registry writes.
 - `src/query/`: deterministic profile analysis and bounded query semantics.
 - `src/server/`: MCP routing, input/output schemas, and response shaping.
 - `src/setup.rs`: Codex integration and its rollback/idempotency behavior.
@@ -83,4 +94,5 @@ cargo test --locked --all-targets --all-features
 
 Changes affecting MSRV-sensitive code must also pass with Rust 1.88. Changes to
 MCP responses, registry safety, setup, or filesystem behavior require focused
-tests in addition to the full suite.
+tests in addition to the full suite. Capture changes require a deterministic
+fake-perf pipeline test and, when available, a real Linux perf smoke test.

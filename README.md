@@ -1,8 +1,9 @@
 # prof-mcp
 
 `prof-mcp` is a workspace-local, read-only stdio MCP server for folded stack
-profiles. It does not read `perf.data`, run profilers, render SVG, or execute
-shell commands.
+profiles, plus a thin Linux CLI capture pipeline. The MCP server does not read
+`perf.data`, render SVG, or execute shell commands; `capture` directly invokes
+the system `perf` and collapses its script output in Rust.
 
 Run it once after placing `prof-mcp` on `PATH`. Direct invocation idempotently
 installs the Codex MCP entry and a small managed block in the global Codex
@@ -41,6 +42,18 @@ prof-mcp register ./baseline.folded --name baseline
 prof-mcp register ./candidate.folded --name candidate
 ```
 
+Capture and register a profile in one step on Linux:
+
+```bash
+prof-mcp capture --name candidate --sample-period-us 1000 -- ./my-program args...
+```
+
+`capture` runs `perf record -g`, streams `perf script` output through the
+built-in Rust collapse step, then sends the folded file through the same
+validated registration path. The sampling-period option is recorded as profile
+metadata; the capture command otherwise uses perf's normal sampling
+configuration.
+
 `prof-mcp PROFILE` remains a compatibility shorthand for
 `prof-mcp register PROFILE`. Registration validates the complete input and
 stores its exact bytes in `.prof-mcp/profiles/<blake3>.folded`. Re-registering
@@ -59,9 +72,15 @@ Inspect or select aliases:
 ```bash
 prof-mcp list
 prof-mcp use baseline
+prof-mcp remove candidate
+prof-mcp remove baseline --new-active candidate
 prof-mcp gc --dry-run
 prof-mcp gc
 ```
+
+`remove` deletes only an alias from the manifest. Removing the active alias
+requires `--new-active`; the last alias cannot be removed. Profile blobs remain
+until `gc` finds them unreferenced.
 
 `gc` discovers the nearest registry, reports a deterministic deletion plan
 with `--dry-run`, and removes only unreferenced, regular,
@@ -125,8 +144,8 @@ as `baseline` and `candidate`, then running an inclusive diff for that exact
 name, returned equal weights and `delta_pp: 0`.
 
 `prof-mcp` is intentionally not an SVG viewer, TUI, HTTP service, SQL/DuckDB
-interface, native `perf.data` parser, or profiler runner. Use SVG for global
-shape and the registered folded input for complete audit.
+interface, or native `perf.data` parser. Use SVG for global shape and the
+registered folded input for complete audit.
 
 Run local gates with:
 

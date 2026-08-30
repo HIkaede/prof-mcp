@@ -61,6 +61,25 @@ pub enum Command {
         #[arg(value_name = "ALIAS")]
         alias: String,
     },
+    /// Remove one registered alias without deleting its profile blob.
+    Remove {
+        #[arg(value_name = "ALIAS")]
+        alias: String,
+        /// Replacement active alias when removing the current active alias.
+        #[arg(long, value_name = "ALIAS")]
+        new_active: Option<String>,
+    },
+    /// Run system perf, fold its output, and register the result.
+    Capture {
+        #[arg(long, value_name = "ALIAS")]
+        name: Option<String>,
+        /// Sampling period metadata in microseconds for estimated-time output.
+        #[arg(long, value_name = "US")]
+        sample_period_us: Option<u64>,
+        /// Command to profile, after `--`.
+        #[arg(required = true, last = true, value_name = "COMMAND")]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Remove unreferenced folded blobs from the nearest workspace registry.
     Gc {
         /// Print the deletion plan without removing files.

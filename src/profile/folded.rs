@@ -36,7 +36,7 @@ pub fn parse_line(
             code,
             format!("line {line_no} has invalid weight"),
             serde_json::json!({"line": line_no, "preview": preview(bytes)}),
-            "Regenerate the file with stackcollapse-perf.pl.",
+            "Use prof-mcp capture or provide a valid folded stack file.",
         )
     })?;
     if weight == 0 {
@@ -75,6 +75,6 @@ fn invalid_line(line: usize, bytes: &[u8], reason: &str) -> ApiError {
         "invalid_folded_line",
         format!("line {line} {reason}"),
         serde_json::json!({"line": line, "preview": preview(bytes)}),
-        "Regenerate the file with stackcollapse-perf.pl.",
+        "Use prof-mcp capture or provide a valid folded stack file.",
     )
 }

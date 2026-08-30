@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use clap::Parser;
 use prof_mcp::{
+    capture,
     config::{Cli, Command, Config},
     registry,
     server::run_stdio,
@@ -58,6 +59,23 @@ async fn main() -> Result<()> {
             println!("active alias={}", status.active);
             Ok(())
         }
+        Some(Command::Remove { alias, new_active }) => {
+            let removal =
+                registry::remove(&std::env::current_dir()?, &alias, new_active.as_deref())
+                    .map_err(anyhow::Error::msg)?;
+            println!("removed alias={} active={}", removal.alias, removal.active);
+            Ok(())
+        }
+        Some(Command::Capture {
+            name,
+            sample_period_us,
+            command,
+        }) => {
+            let registration = capture::run(&config, name.as_deref(), sample_period_us, &command)
+                .map_err(anyhow::Error::msg)?;
+            print_registration(&registration);
+            Ok(())
+        }
         Some(Command::Gc { dry_run }) => {
             let report =
                 registry::gc(&std::env::current_dir()?, dry_run).map_err(anyhow::Error::msg)?;
@@ -99,6 +117,11 @@ fn register(
         sample_period_us,
     )
     .map_err(anyhow::Error::msg)?;
+    print_registration(&registration);
+    Ok(())
+}
+
+fn print_registration(registration: &registry::Registration) {
     println!(
         "registered alias={} fingerprint={} bytes={} sample_period_us={}",
         registration.alias,
@@ -109,5 +132,4 @@ fn register(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".into())
     );
-    Ok(())
 }

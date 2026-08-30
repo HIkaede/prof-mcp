@@ -1,6 +1,7 @@
 //! Core, deterministic folded-stack profile analysis for prof-mcp.
 
 pub mod cache;
+pub mod capture;
 pub mod config;
 pub mod error;
 pub mod output;

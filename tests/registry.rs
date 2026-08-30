@@ -430,3 +430,58 @@ fn registration_records_sample_period_and_rejects_zero() {
     let zero = registry::register(workspace.path(), &source, Some("zero"), 1024, Some(0));
     assert_eq!(zero.unwrap_err().code, "invalid_sample_period");
 }
+
+#[test]
+fn remove_unlinks_aliases_without_deleting_shared_blobs() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    let first = registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+
+    let removal = registry::remove(workspace.path(), "base", None).unwrap();
+    assert_eq!(removal.alias, "base");
+    assert_eq!(removal.active, "candidate");
+    assert_eq!(
+        registry::resolve(workspace.path(), None).unwrap().alias,
+        "candidate"
+    );
+    assert!(
+        workspace
+            .path()
+            .join(format!(".prof-mcp/profiles/{}.folded", first.fingerprint))
+            .exists()
+    );
+    assert_eq!(
+        registry::remove(workspace.path(), "candidate", None)
+            .unwrap_err()
+            .code,
+        "cannot_remove_last_alias"
+    );
+}
+
+#[test]
+fn remove_active_alias_requires_existing_replacement_and_rejects_last_alias() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    assert_eq!(
+        registry::remove(workspace.path(), "base", None)
+            .unwrap_err()
+            .code,
+        "cannot_remove_last_alias"
+    );
+
+    fs::write(&source, "root;B 2\n").unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+    assert_eq!(
+        registry::remove(workspace.path(), "candidate", None)
+            .unwrap_err()
+            .code,
+        "active_alias_requires_replacement"
+    );
+    let removal = registry::remove(workspace.path(), "candidate", Some("base")).unwrap();
+    assert_eq!(removal.active, "base");
+    assert_eq!(registry::status(workspace.path()).unwrap().active, "base");
+}
