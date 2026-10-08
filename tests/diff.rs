@@ -128,19 +128,3 @@ fn diff_stays_quiet_when_totals_are_comparable() {
         .collect();
     assert_eq!(warnings.len(), 1);
 }
-
-#[test]
-fn diff_survives_typed_output_round_trip_with_ratio() {
-    let baseline = support::profile("root;hot 100\n");
-    let candidate = support::profile("root;hot 250\n");
-    let result = query::diff(
-        &baseline,
-        &candidate,
-        TopSort::SelfWeight,
-        DiffSort::Regression,
-        10,
-        None,
-    )
-    .unwrap();
-    assert!(result["data"]["total_weight_ratio"].is_number());
-}

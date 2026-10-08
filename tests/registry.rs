@@ -246,6 +246,12 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
     );
     assert_eq!(fs::read(&source).unwrap(), bytes);
     assert_eq!(fs::read(&failed_source).unwrap(), failed_bytes);
+    fs::write(&manifest_path, valid_manifest).unwrap();
+    registry::register(workspace.path(), &failed_source, Some("new"), 1024, None).unwrap();
+    assert_eq!(
+        registry::resolve(workspace.path(), None).unwrap().alias,
+        "new"
+    );
 }
 
 #[test]

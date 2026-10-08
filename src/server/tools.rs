@@ -12,9 +12,7 @@ use super::outputs::{
     DiffOutput, DirectionOutput, PathsOutput, TopOutput, TreeOutput, single_output_schema,
     typed_output, typed_output_schema,
 };
-use super::respond::{
-    failure, success, tag_alias, tag_diff_aliases, tag_registry, tag_weight_semantics,
-};
+use super::respond::{failure, success, tag_alias, tag_diff_aliases, tag_registry};
 use crate::query::{self, FrameSelector, FrameWindow};
 use crate::registry;
 
@@ -35,8 +33,9 @@ impl ProfileServer {
             .and_then(|loaded| {
                 let status = registry::status(self.cache.workspace())?;
                 Ok(tag_registry(
-                    tag_weight_semantics(
-                        tag_alias(query::summary(&loaded.profile), &loaded.alias),
+                    tag_alias(
+                        query::summary(&loaded.profile),
+                        &loaded.alias,
                         loaded.sample_period_us,
                     ),
                     status,
@@ -69,9 +68,7 @@ impl ProfileServer {
                     input.limit,
                     input.normalize,
                 )
-                .map(|value| {
-                    tag_weight_semantics(tag_alias(value, &loaded.alias), loaded.sample_period_us)
-                })
+                .map(|value| tag_alias(value, &loaded.alias, loaded.sample_period_us))
             }) {
             Ok(value) => success(
                 value,
@@ -99,7 +96,13 @@ impl ProfileServer {
                     input.name_regex.as_deref(),
                     input.normalize,
                 )
-                .and_then(|value| typed_output::<TopOutput>(tag_alias(value, &loaded.alias)))
+                .and_then(|value| {
+                    typed_output::<TopOutput>(tag_alias(
+                        value,
+                        &loaded.alias,
+                        loaded.sample_period_us,
+                    ))
+                })
             }) {
             Ok(value) => success(
                 value,
@@ -129,7 +132,13 @@ impl ProfileServer {
                     input.max_nodes,
                     input.min_scope_percent,
                 )
-                .and_then(|value| typed_output::<TreeOutput>(tag_alias(value, &loaded.alias)))
+                .and_then(|value| {
+                    typed_output::<TreeOutput>(tag_alias(
+                        value,
+                        &loaded.alias,
+                        loaded.sample_period_us,
+                    ))
+                })
             }) {
             Ok(value) => success(
                 value,
@@ -160,7 +169,13 @@ impl ProfileServer {
                         .as_ref()
                         .map(|c| (c.node_path.as_slice(), c.profile_fingerprint.as_str())),
                 )
-                .and_then(|value| typed_output::<DirectionOutput>(tag_alias(value, &loaded.alias)))
+                .and_then(|value| {
+                    typed_output::<DirectionOutput>(tag_alias(
+                        value,
+                        &loaded.alias,
+                        loaded.sample_period_us,
+                    ))
+                })
             }) {
             Ok(value) => success(
                 value,
@@ -193,7 +208,13 @@ impl ProfileServer {
                         .as_ref()
                         .map(|c| (c.node_path.as_slice(), c.profile_fingerprint.as_str())),
                 )
-                .and_then(|value| typed_output::<DirectionOutput>(tag_alias(value, &loaded.alias)))
+                .and_then(|value| {
+                    typed_output::<DirectionOutput>(tag_alias(
+                        value,
+                        &loaded.alias,
+                        loaded.sample_period_us,
+                    ))
+                })
             }) {
             Ok(value) => success(
                 value,
@@ -223,7 +244,13 @@ impl ProfileServer {
                     frame_window,
                     input.max_total_frames,
                 )
-                .and_then(|value| typed_output::<PathsOutput>(tag_alias(value, &loaded.alias)))
+                .and_then(|value| {
+                    typed_output::<PathsOutput>(tag_alias(
+                        value,
+                        &loaded.alias,
+                        loaded.sample_period_us,
+                    ))
+                })
             }) {
             Ok(value) => success(
                 value,
@@ -253,7 +280,9 @@ impl ProfileServer {
                 typed_output::<DiffOutput>(tag_diff_aliases(
                     value,
                     &baseline.alias,
+                    baseline.sample_period_us,
                     &candidate.alias,
+                    candidate.sample_period_us,
                 ))
             })
         }

@@ -256,3 +256,71 @@ impl RenderState<'_> {
         stats.weight = stats.weight.saturating_add(weight);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalization_keeps_operators_and_strips_nested_templates() {
+        for (input, expected) in [
+            ("make<A<B>, C>", "make"),
+            ("make<T>::call<U>", "make::call"),
+            ("operator<<", "operator<<"),
+            ("<T>", "<T>"),
+            ("unclosed<T", "unclosed<T"),
+            ("plain", "plain"),
+        ] {
+            assert_eq!(normalize_frame_name(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn tree_budget_accepts_endpoints_and_rejects_nonfinite_percentages() {
+        for (depth, nodes, percent) in [(0, 1, 0.0), (16, 512, 100.0)] {
+            check_budget(depth, nodes, percent).unwrap();
+        }
+        for (depth, nodes, percent) in [
+            (17, 1, 0.0),
+            (0, 0, 0.0),
+            (0, 513, 0.0),
+            (0, 1, -0.1),
+            (0, 1, 100.1),
+            (0, 1, f64::NAN),
+            (0, 1, f64::INFINITY),
+            (0, 1, f64::NEG_INFINITY),
+        ] {
+            assert_eq!(
+                check_budget(depth, nodes, percent).unwrap_err().code,
+                "invalid_budget"
+            );
+        }
+    }
+
+    #[test]
+    fn ranking_breaks_weight_ties_by_self_weight_then_name() {
+        use crate::profile::{BuildLimits, ProfileBuilder};
+        let input = b"z 5\na 5\nb;leaf 5\n";
+        let profile = ProfileBuilder::new(BuildLimits::default())
+            .from_reader(
+                std::io::Cursor::new(input),
+                "/ranking.folded".into(),
+                input.len() as u64,
+                None,
+            )
+            .unwrap();
+        let id = |name| profile.frame_id(name).unwrap();
+        assert_eq!(
+            frame_order(&profile, id("a"), id("z"), TopSort::SelfWeight),
+            Ordering::Less
+        );
+        assert_eq!(
+            frame_order(&profile, id("z"), id("b"), TopSort::Inclusive),
+            Ordering::Less
+        );
+        assert_eq!(
+            frame_order(&profile, id("b"), id("z"), TopSort::Inclusive),
+            Ordering::Greater
+        );
+    }
+}

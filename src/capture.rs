@@ -4,13 +4,13 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
-    process::{Command, Stdio},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
+    process::{Child, Command, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
 
-use crate::{config::Config, registry};
+use crate::{config::Config, profile::BuildLimits, registry};
 
 pub fn run(
     config: &Config,
@@ -50,22 +50,31 @@ pub fn run(
 
         let folded = temporary.path().join("capture.folded");
         let file = File::create(&folded).context("could not store folded capture")?;
-        let mut script = Command::new("perf")
-            .args(["script", "-i"])
-            .arg(&perf_data)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("could not start perf script")?;
+        let mut script = PerfScript(
+            Command::new("perf")
+                .args(["script", "-i"])
+                .arg(&perf_data)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .context("could not start perf script")?,
+        );
         let stdout = script
+            .0
             .stdout
             .take()
             .context("perf script stdout unavailable")?;
         let mut writer = BufWriter::new(file);
-        let collapse_result = collapse_perf_script(BufReader::new(stdout), &mut writer);
+        collapse_perf_script(
+            BufReader::new(stdout),
+            &mut writer,
+            BuildLimits {
+                max_file_bytes: config.max_file_size_bytes(),
+                ..BuildLimits::default()
+            },
+        )?;
         writer.flush().context("could not flush folded capture")?;
-        let status = script.wait().context("could not wait for perf script")?;
-        collapse_result?;
+        let status = script.0.wait().context("could not wait for perf script")?;
         if !status.success() {
             bail!("perf script failed: {status}");
         }
@@ -81,52 +90,148 @@ pub fn run(
     }
 }
 
-fn collapse_perf_script<R: BufRead, W: Write>(reader: R, writer: &mut W) -> Result<()> {
+// The stream may still be producing output when parsing or file writes fail.
+// Always terminate and reap perf before leaving the temporary capture directory.
+#[cfg(target_os = "linux")]
+struct PerfScript(Child);
+#[cfg(target_os = "linux")]
+impl Drop for PerfScript {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn collapse_perf_script<R: BufRead, W: Write>(
+    mut reader: R,
+    writer: &mut W,
+    limits: BuildLimits,
+) -> Result<()> {
     let mut collapsed = BTreeMap::<String, u64>::new();
     let mut process = None;
     let mut period = 1_u64;
-    let mut stack = Vec::<Vec<String>>::new();
+    let mut stack = Vec::<String>::new();
     let mut event_filter = None;
+    let mut skip_event = false;
+    let mut input_bytes = 0_u64;
+    let mut total_weight = 0_u64;
+    let mut sample_bytes = 0_usize;
+    let mut line_bytes = Vec::new();
+    let mut line_no = 0;
 
-    for (line_no, result) in reader.lines().enumerate() {
-        let line =
-            result.with_context(|| format!("could not read perf script line {}", line_no + 1))?;
-        if line.starts_with('#') {
+    loop {
+        line_bytes.clear();
+        // Read at most one byte past either limit, including for a stream with
+        // no newline. BufRead::lines would allocate an unbounded String first.
+        let remaining = limits.max_file_bytes - input_bytes;
+        let bound = remaining
+            .saturating_add(1)
+            .min((limits.max_line_bytes as u64).saturating_add(1));
+        let read = reader
+            .by_ref()
+            .take(bound)
+            .read_until(b'\n', &mut line_bytes)
+            .context("could not read perf script")?;
+        if read == 0 {
+            break;
+        }
+        line_no += 1;
+        if read as u64 > remaining {
+            bail!("perf script exceeds input byte limit");
+        }
+        input_bytes += read as u64;
+        if read > limits.max_line_bytes {
+            bail!("perf script line {line_no} exceeds line byte limit");
+        }
+        let line = std::str::from_utf8(&line_bytes)
+            .context("perf script contains non-UTF-8 bytes")?
+            .trim_end_matches(['\r', '\n']);
+        if line.trim_start().starts_with('#') {
             continue;
         }
         if line.trim().is_empty() {
-            finish_sample(&mut collapsed, &mut process, &mut period, &mut stack)?;
+            finish_sample(
+                &mut collapsed,
+                &mut process,
+                period,
+                &mut stack,
+                &mut total_weight,
+                limits,
+            )?;
             continue;
         }
-        if let Some((name, sample_period, event)) = parse_event_header(&line) {
-            if process.is_some() {
-                finish_sample(&mut collapsed, &mut process, &mut period, &mut stack)?;
-            }
-            if event_filter
+        if let Some((name, sample_period, event)) = parse_event_header(line) {
+            finish_sample(
+                &mut collapsed,
+                &mut process,
+                period,
+                &mut stack,
+                &mut total_weight,
+                limits,
+            )?;
+            skip_event = event_filter
                 .as_deref()
-                .is_some_and(|selected| selected != event)
-            {
-                process = None;
+                .is_some_and(|selected| selected != event);
+            if skip_event {
                 continue;
             }
+            if sample_period == 0 {
+                bail!("perf sample weight must be positive");
+            }
             event_filter = Some(event);
-            process = Some(name.replace(' ', "_"));
+            let name = encode_frame(&name.replace(' ', "_"));
+            sample_bytes = name.len();
+            process = Some(name);
             period = sample_period;
             continue;
         }
+        if skip_event && line.starts_with(char::is_whitespace) {
+            continue;
+        }
         if process.is_some()
-            && let Some(frames) = parse_stack_line(
-                &line,
-                process
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("java")),
-            )
+            && let Some(frame) = parse_stack_line(line)
         {
-            stack.push(frames);
+            if stack.len().saturating_add(2) > limits.max_depth {
+                bail!("perf stack exceeds maximum depth");
+            }
+            sample_bytes = sample_bytes
+                .checked_add(frame.len() + 1)
+                .context("perf stack size overflow")?;
+            if sample_bytes.saturating_add(period.to_string().len() + 2) > limits.max_line_bytes {
+                bail!("folded capture exceeds line byte limit");
+            }
+            stack.push(frame);
+        } else {
+            bail!("invalid perf script line {line_no}");
         }
     }
-    finish_sample(&mut collapsed, &mut process, &mut period, &mut stack)?;
+    finish_sample(
+        &mut collapsed,
+        &mut process,
+        period,
+        &mut stack,
+        &mut total_weight,
+        limits,
+    )?;
+    if collapsed.is_empty() {
+        bail!("perf script contains no samples with stack frames");
+    }
 
+    // Check the complete serialized output before writing anything. Encoding
+    // can expand symbols, and combining weights can add decimal digits.
+    let mut output_bytes = 0_u64;
+    for (stack, weight) in &collapsed {
+        let len = stack.len().saturating_add(weight.to_string().len() + 2);
+        if len > limits.max_line_bytes {
+            bail!("folded capture exceeds line byte limit");
+        }
+        output_bytes = output_bytes
+            .checked_add(len as u64)
+            .context("folded capture size overflow")?;
+        if output_bytes > limits.max_file_bytes {
+            bail!("folded capture exceeds output byte limit");
+        }
+    }
     for (stack, weight) in collapsed {
         writeln!(writer, "{stack} {weight}").context("could not write folded capture")?;
     }
@@ -136,54 +241,60 @@ fn collapse_perf_script<R: BufRead, W: Write>(reader: R, writer: &mut W) -> Resu
 fn finish_sample(
     collapsed: &mut BTreeMap<String, u64>,
     process: &mut Option<String>,
-    period: &mut u64,
-    stack: &mut Vec<Vec<String>>,
+    period: u64,
+    stack: &mut Vec<String>,
+    total_weight: &mut u64,
+    limits: BuildLimits,
 ) -> Result<()> {
     let Some(process) = process.take() else {
         stack.clear();
         return Ok(());
     };
     if stack.is_empty() {
-        return Ok(());
+        bail!("perf sample has no stack frames");
     }
+    *total_weight = total_weight
+        .checked_add(period)
+        .filter(|sum| *sum <= limits.max_total_weight)
+        .context("perf sample total weight exceeds maximum")?;
     let mut frames = vec![process];
-    for line in stack.drain(..).rev() {
-        frames.extend(line);
-    }
+    frames.extend(stack.drain(..).rev());
     let key = frames.join(";");
     let entry = collapsed.entry(key).or_insert(0);
     *entry = entry
-        .checked_add(*period)
+        .checked_add(period)
         .context("perf sample period overflow")?;
-    *period = 1;
     Ok(())
 }
 
 fn parse_event_header(line: &str) -> Option<(String, u64, String)> {
-    if line.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let end = line.trim_end();
-    let event_colon = end.rfind(':')?;
-    let event_prefix = &end[..event_colon];
+    let event_prefix = line.trim_end().strip_suffix(':')?;
     let (left, event) = event_prefix.rsplit_once(char::is_whitespace)?;
-    let (before_timestamp, period) = match left.trim_end().rsplit_once(char::is_whitespace) {
-        Some((prefix, candidate)) if candidate.parse::<u64>().is_ok() => {
-            (prefix, candidate.parse().ok()?)
-        }
-        _ => (left.trim_end(), 1),
+    let left = left.trim_end();
+    let (before_timestamp, period) = if left.ends_with(':') {
+        (left, 1)
+    } else {
+        let (prefix, period) = left.rsplit_once(char::is_whitespace)?;
+        (prefix.trim_end(), period.parse::<u64>().ok()?)
     };
-    let timestamp_colon = before_timestamp.rfind(':')?;
-    let before_timestamp = before_timestamp[..timestamp_colon].trim_end();
+    let before_timestamp = before_timestamp.strip_suffix(':')?.trim_end();
     let (fields_text, timestamp) = before_timestamp.rsplit_once(char::is_whitespace)?;
-    timestamp.parse::<f64>().ok()?;
-    let fields: Vec<_> = fields_text.split_whitespace().collect();
-    let pid_index = fields.iter().position(|field| is_pid_field(field))?;
-    let process = fields[..pid_index].join(" ");
-    if process.is_empty() {
+    let timestamp = timestamp.parse::<f64>().ok()?;
+    if !timestamp.is_finite() || timestamp < 0.0 {
         return None;
     }
-    Some((process, period, event.trim().to_owned()))
+    let mut fields: Vec<_> = fields_text.split_whitespace().collect();
+    if fields.last()?.starts_with('[') && fields.last()?.ends_with(']') {
+        fields.pop();
+    }
+    if !is_pid_field(fields.pop()?) {
+        return None;
+    }
+    let process = fields.join(" ");
+    if process.is_empty() || event.is_empty() {
+        return None;
+    }
+    Some((process, period, event.to_owned()))
 }
 
 fn is_pid_field(field: &str) -> bool {
@@ -193,7 +304,13 @@ fn is_pid_field(field: &str) -> bool {
         .map_or_else(|| valid(field), |(pid, tid)| valid(pid) && valid(tid))
 }
 
-fn parse_stack_line(line: &str, java_process: bool) -> Option<Vec<String>> {
+// Percent escaping keeps folded separators unambiguous without conflating
+// a literal colon or percent sequence with the original symbol identity.
+fn encode_frame(frame: &str) -> String {
+    frame.replace('%', "%25").replace(';', "%3B")
+}
+
+fn parse_stack_line(line: &str) -> Option<String> {
     let line = line.trim_start();
     let module_start = line.rfind(" (")?;
     if !line.ends_with(')') {
@@ -202,72 +319,25 @@ fn parse_stack_line(line: &str, java_process: bool) -> Option<Vec<String>> {
     let frame = &line[..module_start];
     let module = &line[module_start + 2..line.len() - 1];
     let (pc, raw) = frame.split_once(char::is_whitespace)?;
-    if pc.is_empty()
-        || !pc
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    {
+    let pc = pc.strip_prefix("0x").unwrap_or(pc);
+    if pc.is_empty() || !pc.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
-    let mut frames = Vec::new();
-    for rawfunc in raw.trim().split("->") {
-        if rawfunc.starts_with('(') {
-            continue;
-        }
-        let mut function = rawfunc.trim().to_owned();
-        if let Some(offset) = function.rfind("+0x")
-            && function[offset + 3..]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            function.truncate(offset);
-        }
-        if function == "[unknown]" {
-            function = if module == "[unknown]" {
-                "[unknown]".into()
-            } else {
-                format!("[{}]", module.rsplit('/').next().unwrap_or(module))
-            };
-        }
-        function = function.replace(';', ":");
-        if java_process && function.starts_with('L') && function.contains(':') {
-            function.remove(0);
-        }
-        let go_method = function
-            .find(".(")
-            .is_some_and(|open| function[open + 2..].contains(")."));
-        if let Some(paren) = function.find('(').filter(|&paren| {
-            !go_method && !function[paren + 1..].starts_with("anonymous namespace")
-        }) {
-            function.truncate(paren);
-        }
-        function.retain(|character| character != '\'' && character != '"');
-        if !function.is_empty() {
-            frames.push(function);
-        }
+    let mut function = raw.trim().to_owned();
+    if let Some((symbol, offset)) = function.rsplit_once("+0x")
+        && !offset.is_empty()
+        && offset.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        function = symbol.to_owned();
     }
-    (!frames.is_empty()).then_some(frames)
+    if function == "[unknown]" && module != "[unknown]" {
+        function = format!("[{}]", module.rsplit('/').next().unwrap_or(module));
+    }
+    if function.is_empty() {
+        return None;
+    }
+    Some(encode_frame(&function))
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io::Cursor;
-
-    use super::collapse_perf_script;
-
-    #[test]
-    fn collapses_default_perf_script_and_filters_other_events() {
-        let input = b"# header\nworker 12 1.0: 2 cpu/cycles/P:\n  7 leaf+0x4 (/tmp/a)\n  8 caller (/tmp/a)\n\nworker 12 2.0: 9 instructions:\n  7 ignored (/tmp/a)\n\nworker 12 3.0: 3 cpu/cycles/P:\n  7 leaf (/tmp/a)\n  8 caller (/tmp/a)\n";
-        let mut output = Vec::new();
-        collapse_perf_script(Cursor::new(input), &mut output).unwrap();
-        assert_eq!(output, b"worker;caller;leaf 5\n");
-    }
-
-    #[test]
-    fn accepts_pid_tid_and_process_names_with_spaces() {
-        let input = b"V8 WorkerThread 24636/25607 [000] 1.0: 4 cycles:\n  7 main (/tmp/a)\n\n";
-        let mut output = Vec::new();
-        collapse_perf_script(Cursor::new(input), &mut output).unwrap();
-        assert_eq!(output, b"V8_WorkerThread;main 4\n");
-    }
-}
+mod tests;

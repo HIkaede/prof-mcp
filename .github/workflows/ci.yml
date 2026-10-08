@@ -10,13 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --all-targets --all-features
+        with:
+          components: rustfmt, clippy
+      - run: cargo +stable fmt --check
+      - run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo +stable test --locked --all-targets --all-features
+      - run: cargo +stable test --locked --release --test stdio
 
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
-      - run: cargo test --locked --all-targets --all-features
+      - run: cargo +1.88.0 test --locked --all-targets --all-features

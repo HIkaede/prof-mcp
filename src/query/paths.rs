@@ -246,3 +246,55 @@ fn frame_sequence(profile: &Profile, frames: &[FrameId]) -> Vec<String> {
         .map(|id| profile.frame_name(*id).to_owned())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_clamp_to_stack_and_span_recursive_occurrences() {
+        for (window, expected) in [
+            (None, (0, 6)),
+            (Some(FrameWindow::Head { lines: 2 }), (0, 2)),
+            (Some(FrameWindow::Tail { lines: 2 }), (4, 6)),
+            (Some(FrameWindow::Head { lines: 4096 }), (0, 6)),
+            (Some(FrameWindow::Tail { lines: 4096 }), (0, 6)),
+            (
+                Some(FrameWindow::AroundTarget {
+                    before: 1,
+                    after: 1,
+                }),
+                (0, 6),
+            ),
+            (
+                Some(FrameWindow::AroundTarget {
+                    before: 0,
+                    after: 1,
+                }),
+                (1, 6),
+            ),
+        ] {
+            assert_eq!(frame_window_range(6, &[1, 4], window), expected);
+        }
+    }
+
+    #[test]
+    fn frame_budget_keeps_requested_direction_or_centers_on_target() {
+        for (window, expected) in [
+            (Some(FrameWindow::Head { lines: 8 }), (1, 4)),
+            (Some(FrameWindow::Tail { lines: 8 }), (6, 9)),
+            (None, (4, 7)),
+            (
+                Some(FrameWindow::AroundTarget {
+                    before: 4,
+                    after: 3,
+                }),
+                (4, 7),
+            ),
+        ] {
+            assert_eq!(budget_range(1, 9, &[5], window, 3), expected);
+        }
+        assert_eq!(budget_range(1, 9, &[1], None, 3), (1, 4));
+        assert_eq!(budget_range(1, 9, &[8], None, 3), (6, 9));
+    }
+}

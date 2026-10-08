@@ -103,3 +103,25 @@ fn limits_and_fingerprint_are_enforced_and_stable() {
         parse(b"a 2\n").unwrap().source.fingerprint
     );
 }
+
+#[test]
+fn utf8_final_frames_keep_complete_names_across_ascii_delimiters() {
+    for (name, delimiter) in [
+        ("函数", " "),
+        ("🙂", "\t"),
+        ("é", "  \t"),
+        ("函数🙂", "\t "),
+    ] {
+        let input = format!("root;foo;{name}{delimiter}3\r\n");
+        let profile = parse(input.as_bytes()).unwrap();
+        assert_eq!(profile.total_weight, 3);
+        assert!(profile.frame_id(name).is_some(), "{name}");
+        assert_eq!(profile.stacks[0].frames.len(), 3);
+    }
+    for input in ["root;函数 nope\n", "root;函数 0\n"] {
+        assert_eq!(
+            prof_mcp::error::ApiError::from(parse(input.as_bytes()).unwrap_err()).code,
+            "invalid_weight"
+        );
+    }
+}

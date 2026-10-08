@@ -31,35 +31,33 @@ pub(crate) fn success(mut value: Value, text: &str, next_steps: &[&str]) -> Call
     result.content = vec![ContentBlock::text(fallback)];
     result
 }
-pub(crate) fn tag_weight_semantics(mut value: Value, sample_period_us: Option<u64>) -> Value {
-    if let (Some(period), Some(profile)) = (
-        sample_period_us,
-        value.get_mut("profile").and_then(Value::as_object_mut),
-    ) {
-        profile.insert(
-            "weight_semantics".into(),
-            json!({
-                "unit":"estimated_us",
-                "basis":"user_supplied_sample_period",
-                "sample_period_us":period
-            }),
-        );
-    }
-    value
-}
-
-pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
+pub(crate) fn tag_alias(mut value: Value, alias: &str, sample_period_us: Option<u64>) -> Value {
     if let Some(profile) = value.get_mut("profile").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(alias.into()));
+        if let Some(period) = sample_period_us {
+            profile["weight_semantics"]["sample_period_us"] = json!(period);
+        }
     }
     value
 }
-pub(crate) fn tag_diff_aliases(mut value: Value, baseline: &str, candidate: &str) -> Value {
+pub(crate) fn tag_diff_aliases(
+    mut value: Value,
+    baseline: &str,
+    baseline_period: Option<u64>,
+    candidate: &str,
+    candidate_period: Option<u64>,
+) -> Value {
     if let Some(profile) = value.get_mut("baseline").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(baseline.into()));
+        if let Some(period) = baseline_period {
+            profile["weight_semantics"]["sample_period_us"] = json!(period);
+        }
     }
     if let Some(profile) = value.get_mut("candidate").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(candidate.into()));
+        if let Some(period) = candidate_period {
+            profile["weight_semantics"]["sample_period_us"] = json!(period);
+        }
     }
     value
 }

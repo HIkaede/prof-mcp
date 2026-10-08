@@ -15,8 +15,7 @@ pub struct Cli {
     /// Alias for the backward-compatible PROFILE form.
     #[arg(long, value_name = "ALIAS", requires = "profile")]
     pub name: Option<String>,
-    /// Optional sampling period in microseconds, recorded so queries can
-    /// report estimated time per weight unit.
+    /// User-declared sampling period metadata in microseconds; does not convert weights.
     #[arg(long, value_name = "US", requires = "profile")]
     pub sample_period_us: Option<u64>,
     /// Maximum accepted profile file size in MiB.
@@ -50,7 +49,7 @@ pub enum Command {
         profile: std::path::PathBuf,
         #[arg(long, value_name = "ALIAS")]
         name: Option<String>,
-        /// Optional sampling period in microseconds for estimated-time output.
+        /// User-declared period metadata in microseconds; does not convert weights.
         #[arg(long, value_name = "US")]
         sample_period_us: Option<u64>,
     },
@@ -73,7 +72,7 @@ pub enum Command {
     Capture {
         #[arg(long, value_name = "ALIAS")]
         name: Option<String>,
-        /// Sampling period metadata in microseconds for estimated-time output.
+        /// User-declared period metadata; does not configure perf or convert weights.
         #[arg(long, value_name = "US")]
         sample_period_us: Option<u64>,
         /// Command to profile, after `--`.

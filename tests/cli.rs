@@ -154,6 +154,34 @@ fn serve_requires_explicit_mcp_flag_and_version_is_available() {
     );
 }
 
+#[test]
+fn help_and_invalid_arguments_keep_plain_text_diagnostics() {
+    for args in [
+        vec!["--help"],
+        vec!["serve", "--help"],
+        vec!["capture", "--help"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+        assert!(!output.stdout.contains(&0x1b));
+        assert!(output.stderr.is_empty());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .args(["serve", "--unknown-option"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("unexpected argument"));
+    assert!(error.contains("Usage:"));
+    assert!(!output.stderr.contains(&0x1b));
+}
+
 #[cfg(unix)]
 #[test]
 fn direct_invocation_idempotently_installs_codex_mcp_and_agents_guidance() {
@@ -272,4 +300,93 @@ exit 3
         fs::read_to_string(codex_home.join("AGENTS.md")).unwrap(),
         "# Personal guidance\n"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_rolls_back_registration_when_guidance_write_fails_and_can_retry() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let sandbox = tempdir().unwrap();
+    let bin_dir = sandbox.path().join("bin");
+    let codex_home = sandbox.path().join("codex-home");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(&codex_home).unwrap();
+    let personal = sandbox.path().join("personal.md");
+    fs::write(&personal, "# Keep personal guidance\n").unwrap();
+    let agents = codex_home.join("AGENTS.md");
+    symlink(&personal, &agents).unwrap();
+    let prof = bin_dir.join("prof-mcp");
+    symlink(env!("CARGO_BIN_EXE_prof-mcp"), &prof).unwrap();
+    let codex = bin_dir.join("codex");
+    fs::write(&codex, r#"#!/bin/sh
+if [ "$1 $2 $3" = "mcp list --json" ]; then
+  if [ -f "$CODEX_HOME/state" ]; then
+    printf '[{"name":"prof-mcp","enabled":true,"transport":{"type":"stdio","command":"prof-mcp","args":["serve","--mcp"]}}]\n'
+  else printf '[]\n'; fi
+  exit 0
+fi
+if [ "$1 $2 $3" = "mcp add prof-mcp" ]; then : > "$CODEX_HOME/state"; exit 0; fi
+if [ "$1 $2 $3" = "mcp remove prof-mcp" ]; then /bin/rm -f "$CODEX_HOME/state"; exit 0; fi
+exit 3
+"#).unwrap();
+    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = || {
+        Command::new(&prof)
+            .arg("setup")
+            .env("CODEX_HOME", &codex_home)
+            .env("PATH", &bin_dir)
+            .output()
+            .unwrap()
+    };
+    let failed = run();
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("Refusing to replace symlinked AGENTS.md")
+    );
+    assert!(
+        !codex_home.join("state").exists(),
+        "new MCP registration was rolled back"
+    );
+    assert_eq!(
+        fs::read_to_string(&personal).unwrap(),
+        "# Keep personal guidance\n"
+    );
+    assert!(
+        fs::symlink_metadata(&agents)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    fs::remove_file(&agents).unwrap();
+    fs::write(&agents, fs::read(&personal).unwrap()).unwrap();
+    let retried = run();
+    assert!(
+        retried.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retried.stderr)
+    );
+    assert!(codex_home.join("state").exists());
+    let guidance = fs::read_to_string(&agents).unwrap();
+    assert!(guidance.starts_with("# Keep personal guidance\n"));
+    assert_eq!(guidance.matches("<!-- PROF_MCP_START -->").count(), 1);
+}
+
+#[test]
+fn sampling_period_help_describes_metadata_without_claiming_time_conversion() {
+    for args in [
+        vec!["--help"],
+        vec!["register", "--help"],
+        vec!["capture", "--help"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("User-declared"));
+        assert!(!help.contains("estimated"));
+    }
 }

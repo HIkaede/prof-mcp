@@ -56,3 +56,25 @@ pub(crate) fn atomic_replace(destination: &Path, bytes: &[u8]) -> Result<(), Api
     }
     result.map_err(|error| registry_io(destination, error))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_rename_preserves_destination_cleans_temp_and_allows_retry() {
+        for write in [atomic_write_bytes, atomic_replace] {
+            let root = tempfile::tempdir().unwrap();
+            let destination = root.path().join("blocked");
+            fs::create_dir(&destination).unwrap();
+            fs::write(destination.join("keep"), b"original").unwrap();
+            assert!(write(&destination, b"replacement").is_err());
+            assert_eq!(fs::read(destination.join("keep")).unwrap(), b"original");
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+            fs::remove_dir_all(&destination).unwrap();
+            write(&destination, b"replacement").unwrap();
+            assert_eq!(fs::read(destination).unwrap(), b"replacement");
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+    }
+}

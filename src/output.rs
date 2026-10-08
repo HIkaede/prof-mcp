@@ -20,6 +20,7 @@ pub fn profile_meta(profile: &Profile) -> Value {
         "fingerprint": profile.source.fingerprint,
         "byte_len": profile.source.byte_len,
         "modified_unix_ms": profile.source.modified_unix_ms,
+        "weight_semantics": {"unit":"opaque", "basis":"folded_input"},
     })
 }
 

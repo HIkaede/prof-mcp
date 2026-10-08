@@ -17,10 +17,7 @@ pub fn parse_line(
         .rfind(|c: char| c.is_ascii_whitespace())
         .map(|index| index + 1)
         .ok_or_else(|| invalid_line(line_no, bytes, "has no numeric weight"))?;
-    let delimiter_start = line[..weight_start - 1]
-        .rfind(|c: char| !c.is_ascii_whitespace())
-        .map_or(0, |index| index + 1);
-    let stack = &line[..delimiter_start];
+    let stack = line[..weight_start - 1].trim_end_matches(|c: char| c.is_ascii_whitespace());
     let weight_text = &line[weight_start..];
     if stack.is_empty() {
         return Err(invalid_line(line_no, bytes, "has an empty stack"));
@@ -77,4 +74,31 @@ fn invalid_line(line: usize, bytes: &[u8], reason: &str) -> ApiError {
         serde_json::json!({"line": line, "preview": preview(bytes)}),
         "Use prof-mcp capture or provide a valid folded stack file.",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_parser_preserves_spaces_and_checks_depth_at_the_boundary() {
+        assert_eq!(
+            parse_line(7, b"root;with spaces  \t37\r\n", 2).unwrap(),
+            Some((vec!["root", "with spaces"], 37))
+        );
+        let error = parse_line(7, b"root;with spaces 37\n", 1).unwrap_err();
+        assert_eq!(error.code, "stack_too_deep");
+        assert_eq!(error.details["line"], 7);
+        assert!(parse_line(8, b" \t\r\n", 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn invalid_utf8_returns_a_safe_preview_and_line_number() {
+        let error = parse_line(9, b"root;\xff\x1b 1\n", 2).unwrap_err();
+        assert_eq!(error.code, "invalid_folded_line");
+        assert_eq!(error.details["line"], 9);
+        let preview = error.details["preview"].as_str().unwrap();
+        assert!(preview.contains('�'));
+        assert!(!preview.chars().any(char::is_control));
+    }
 }

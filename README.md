@@ -52,7 +52,29 @@ prof-mcp capture --name candidate --sample-period-us 1000 -- ./my-program args..
 built-in Rust collapse step, then sends the folded file through the same
 validated registration path. The sampling-period option is recorded as profile
 metadata; the capture command otherwise uses perf's normal sampling
-configuration.
+configuration. It neither sets perf's sampling period nor rescales folded
+weights. Every query reports `profile.weight_semantics` with `unit: "opaque"`
+and `basis: "folded_input"`; a declared `sample_period_us` appears there as
+metadata. Diffs retain each side's own declaration. The raw weights are never
+labeled as elapsed microseconds.
+
+Capture preserves complete function signatures, operators, quotes and language
+names. It removes only a terminal `+0xHEX` address offset. Literal `%` and `;`
+in captured frame names become `%25` and `%3B`, respectively, so folded
+separators remain unambiguous; query these encoded names exactly as returned.
+Parenthesized names, Java descriptors and Go receivers are retained. Plain
+`->` is retained inside a symbol rather than treated as an inline-stack marker.
+
+The collapse step bounds both the raw script stream and folded output by
+`--max-file-size-mib` (default 512 MiB), each input/output line by 8 MiB, each
+stack by 4096 frames including the process root, and total selected weight by
+`2^53 - 1`. It keeps the first observed event type and filters other event
+types. Empty output, malformed selected samples, limit violations and perf/I/O
+failures fail capture without replacing an existing alias. A failed stream
+terminates and reaps `perf script`. Perf's human-readable output varies by
+version; unsupported formats fail explicitly. See the
+[upstream perf script documentation](https://github.com/torvalds/linux/blob/master/tools/perf/Documentation/perf-script.txt)
+for event fields and callchain output.
 
 `prof-mcp PROFILE` remains a compatibility shorthand for
 `prof-mcp register PROFILE`. Registration validates the complete input and
@@ -147,13 +169,51 @@ name, returned equal weights and `delta_pp: 0`.
 interface, or native `perf.data` parser. Use SVG for global shape and the
 registered folded input for complete audit.
 
+Build the stripped release binary with the pinned toolchain in
+`rust-toolchain.toml`:
+
+```bash
+cargo build --locked --release
+```
+
+Development uses Rust 1.99.0; the minimum supported version remains Rust 1.88.
+The release profile already enables size optimization and LTO. The stdio server
+uses Tokio's current-thread runtime; its blocking profile parser still runs on
+the blocking pool. Dependency features retain Unicode regex queries, schema
+generation, log filtering, and stderr diagnostics. CLI help and errors use
+plain text; optional colors and typo suggestions are disabled.
+
 Run local gates with:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo +1.88.0 test --locked --all-targets --all-features
 ```
+
+Tests are organized by boundary: private parser/query/persistence rules live in
+module unit tests; `tests/queries/` groups public query behavior by paths, tree,
+and symbols/top; `tests/mcp/` checks schemas, independent client types,
+errors, and live registration. `tests/cache.rs` checks shared blobs and alias
+replacement, while `tests/invariants.rs` enumerates small reordered and split
+inputs. Registry/setup tests use real temporary files and directories.
+
+`tests/stdio.rs` starts the actual Cargo-built binary, checks the MCP handshake,
+tool order and live registration, and requires protocol-only stdout with debug
+logs on stderr. Exchanges and shutdown are bounded; failure kills and reaps the
+child. Run focused tests or the release smoke with:
+
+```bash
+cargo test --locked --test queries paths::
+cargo test --locked --test mcp --test cache --test invariants
+cargo test --locked --release --test stdio
+```
+
+CI explicitly selects stable and Rust 1.88 so the local toolchain pin cannot
+mask the MSRV job. Linux capture tests use fake perf; ordinary tests do not
+require profiler permissions. Symlink/setup tests require Unix, and Linux
+missing-registry tests use `/dev/shm` to avoid an unrelated `/tmp` registry.
 
 For Inspector, use a config whose command is an absolute `prof-mcp` path and
 whose args are `serve --mcp`, then set the server working directory to the

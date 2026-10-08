@@ -9,12 +9,21 @@ use serde_json::{Value, json};
 use crate::error::ApiError;
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub(crate) struct WeightSemantics {
+    unit: String,
+    basis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_period_us: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) struct OutputProfile {
     canonical_path: String,
     fingerprint: String,
     byte_len: u64,
     modified_unix_ms: Option<u64>,
     alias: String,
+    weight_semantics: WeightSemantics,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -216,8 +225,8 @@ pub(crate) fn output_schema(
 ) -> Arc<serde_json::Map<String, Value>> {
     let profile = serde_json::json!({
         "type":"object",
-        "properties":{"canonical_path":{"type":"string"},"fingerprint":{"type":"string"},"byte_len":{"type":"integer"},"modified_unix_ms":{"type":["integer","null"]},"alias":{"type":"string"}},
-        "required":["canonical_path","fingerprint","byte_len","modified_unix_ms","alias"]
+        "properties":{"canonical_path":{"type":"string"},"fingerprint":{"type":"string"},"byte_len":{"type":"integer"},"modified_unix_ms":{"type":["integer","null"]},"alias":{"type":"string"},"weight_semantics":{"type":"object","properties":{"unit":{"type":"string","const":"opaque"},"basis":{"type":"string","const":"folded_input"},"sample_period_us":{"type":"integer","minimum":1}},"required":["unit","basis"]}},
+        "required":["canonical_path","fingerprint","byte_len","modified_unix_ms","alias","weight_semantics"]
     });
     let properties = serde_json::json!({
         "schema_version":{"type":"string","const":"2"},
