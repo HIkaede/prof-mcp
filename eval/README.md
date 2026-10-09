@@ -79,7 +79,7 @@ agents the same task file and restrict each agent's profile evidence to one arm:
 python3 eval/make_large.py /tmp/large.folded
 python3 eval/raw.py /tmp/raw-workspace 'print(open("baseline.folded").read())'
 python3 eval/query.py /tmp/mcp-workspace -- --list
-python3 eval/query.py /tmp/mcp-workspace profile_top '{"profile":"baseline","sort":"self","limit":1}'
+python3 eval/query.py /tmp/mcp-workspace profile_top '{"profile":"baseline","metric":"self","limit":1}'
 ```
 
 Raw agents author their own folded aggregation through `raw.py`. MCP agents
@@ -119,5 +119,5 @@ python3 eval/test_query.py
 The repeated local trials covered all tasks with the eight tools and avoided
 custom folded parsing in the MCP arm. Raw agents also answered correctly and
 used fewer evidence calls and returned bytes by batching their own aggregation.
-Keep the eight-tool algebra and `profile_top.focus`; these trials do not establish
+Keep the eight-tool algebra and `profile_top.frame`, which selects complete stacks containing that frame and ranks within that scope; these trials do not establish
 a benefit from another primitive or a public rename.

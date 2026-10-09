@@ -28,6 +28,9 @@ folded text. Do not add capture behavior to MCP request handling.
   causal performance conclusions, and code must not invent missing DSO/source
   metadata or treat overlapping context observations as a partition.
 - Protocol output stays on stdout; diagnostics and logs stay on stderr.
+- Tool results are capped at 64 KiB of compact JSON and manifests at 4 MiB.
+  Over-limit cases return structured `query_too_large` / `registry_too_large`
+  errors; never silently shorten exact frame names or statistics.
 
 ## Registry and safety invariants
 
@@ -40,8 +43,10 @@ folded text. Do not add capture behavior to MCP request handling.
   and registry paths before use. Reject symlinks, non-regular files, and paths
   that escape `.prof-mcp`.
 - Registry mutations (`register`, `use`, `remove`, and `gc`) are serialized by the
-  persistent advisory lock. Preserve recoverable lock contention and fail
-  closed where the platform cannot safely provide the required file identity.
+  persistent advisory lock. Preserve recoverable lock contention. The lock relies
+  on Unix file identity and `src/registry/lock.rs` currently does not compile on
+  non-Unix targets, so claim only Unix/Linux support until conditional
+  compilation and a CI build check exist.
 - `remove` deletes only a manifest alias. Removing the active alias requires an
   existing replacement alias, and the last alias cannot be removed. Blob
   deletion remains the responsibility of `gc`.
@@ -61,8 +66,8 @@ folded text. Do not add capture behavior to MCP request handling.
   then reuses `registry::register`, preserving size, parser, alias, and
   atomic-write checks.
 - `setup` only updates the Codex MCP registration. It must be idempotent,
-  support `--dry-run`, refuse
-  conflicting custom registrations, and avoid a partial successful setup.
+  support `--dry-run`, refuse conflicting custom registrations, and avoid a
+  partial successful setup.
 - Agent guidance is documentation, not a runtime source of truth. Setup must
   preserve global agent instructions.
 
@@ -77,22 +82,29 @@ folded text. Do not add capture behavior to MCP request handling.
 - `src/server/`: MCP routing, input/output schemas, and response shaping.
 - `src/setup.rs`: Codex integration and its rollback/idempotency behavior.
 
-Keep changes in the narrowest responsible module. Update README examples and
-tests when a user-visible CLI, MCP tool, schema, limit, or persistence rule
-changes. Avoid new dependencies or abstractions unless the current modules
+Keep changes in the narrowest responsible module. When a user-visible CLI, MCP
+tool, schema, limit, or persistence rule changes, update the tests and every doc
+that states it: `README.md`, its Chinese summary `docs/README.zh-CN.md`,
+`docs/contract.md`, `eval/README.md`, and `inspector.config.json`. Avoid new dependencies or abstractions unless the current modules
 cannot express the required behavior clearly.
 
 ## Required validation
 
-Run the same gates as CI from the repository root:
+Run from the repository root. These mirror `.github/workflows/ci.yml`; if the
+two differ, CI is authoritative and this list must be updated:
 
 ```bash
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
+cargo test --locked --release --test stdio
+python3 eval/test_query.py
+python3 eval/score.py --self-check
+cargo +1.88.0 test --locked --all-targets --all-features
 ```
 
-Changes affecting MSRV-sensitive code must also pass with Rust 1.88. Changes to
-MCP responses, registry safety, setup, or filesystem behavior require focused
-tests in addition to the full suite. Capture changes require a deterministic
-fake-perf pipeline test and, when available, a real Linux perf smoke test.
+CI also runs a short fuzz smoke (see the `fuzz` job); run it when changing
+folded parsing or capture collapse. Changes to MCP responses, registry safety,
+setup, or filesystem behavior require focused tests in addition to the full
+suite. Capture changes require a deterministic fake-perf pipeline test and,
+when available, a real Linux perf smoke test.
