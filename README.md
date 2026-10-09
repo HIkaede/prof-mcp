@@ -30,7 +30,7 @@ The resulting Codex configuration is equivalent to:
 ```toml
 [mcp_servers.prof-mcp]
 command = "prof-mcp"
-args = ["serve", "--mcp"]
+args = ["serve"]
 ```
 
 Register profiles from an agent workspace:
@@ -77,7 +77,9 @@ for event fields and callchain output.
 
 `prof-mcp PROFILE` is shorthand for
 `prof-mcp register PROFILE`. Registration validates the complete input and
-stores its exact bytes in `.prof-mcp/profiles/<blake3>.folded`. Re-registering
+stores its exact bytes in `.prof-mcp/profiles/<blake3>.folded`. Input is bounded
+and spooled to a temporary file; parsing and byte comparison stream from disk.
+Re-registering
 an alias replaces it and makes it active; byte-identical inputs are deduplicated.
 Registry updates use a persistent advisory lock, so a killed process releases
 its lock automatically rather than requiring lock-file cleanup. The current
@@ -108,7 +110,7 @@ with `--dry-run`, and removes only unreferenced, regular,
 fingerprint-named blobs. It preserves the manifest and active alias;
 unexpected files under `profiles/` are skipped and reported.
 
-Codex starts `prof-mcp serve --mcp`. The server discovers the nearest ancestor
+Codex starts `prof-mcp serve`. The server discovers the nearest ancestor
 `.prof-mcp/manifest.json` on every query, so registrations made after startup
 are visible. Tool listing is available before registration; queries return structured
 `workspace_not_registered` until one exists.
@@ -210,7 +212,7 @@ permissions. Symlink/setup tests require Unix, and Linux
 missing-registry tests use `/dev/shm` to avoid an unrelated `/tmp` registry.
 
 For Inspector, use a config whose command is an absolute `prof-mcp` path and
-whose args are `serve --mcp`, then set the server working directory to the
+whose args are `serve`, then set the server working directory to the
 registered workspace:
 
 ```bash
@@ -227,6 +229,9 @@ its command to your installed absolute binary when inspecting another workspace.
 Parser and collapse fuzz targets, including bounded mutation commands, live in
 [fuzz/README.md](fuzz/README.md). The native perf comparison and repeated agent
 workflow evaluation tools are documented in [eval/README.md](eval/README.md).
+
+The package is pre-1.0 (0.5.x); its public Rust modules are implementation
+interfaces. MCP responses use schema version `"2"`.
 
 ## License
 

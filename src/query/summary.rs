@@ -37,10 +37,6 @@ pub fn summary(profile: &Profile) -> Value {
             )
         })
         .collect();
-    let unknown_frame_weight = profile
-        .frame_id("[unknown]")
-        .map(|id| profile.frame_stats[id as usize].inclusive_weight)
-        .unwrap_or(0);
     let stack_concentration = stack_concentration(profile);
     let recursion = recursion_report(profile);
     let mut warnings =
@@ -60,7 +56,6 @@ pub fn summary(profile: &Profile) -> Value {
             "frame_count":profile.frames.len(),
             "unique_stack_count":profile.stacks.len(),
             "max_depth":profile.max_depth,
-            "unknown_frame_weight":unknown_frame_weight,
             "stack_concentration":stack_concentration,
             "recursion_detected":recursion,
             "top_self":top_self,

@@ -8,7 +8,7 @@ import subprocess
 
 
 def query(binary, workspace, tool, arguments):
-    process = subprocess.Popen([str(binary), "serve", "--mcp"], cwd=workspace,
+    process = subprocess.Popen([str(binary), "serve"], cwd=workspace,
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, text=True)
     def request(identifier, method, params):

@@ -128,15 +128,8 @@ exit 2
 }
 
 #[test]
-fn serve_flag_and_version() {
+fn version() {
     let binary = env!("CARGO_BIN_EXE_prof-mcp");
-    assert!(
-        !Command::new(binary)
-            .arg("serve")
-            .status()
-            .unwrap()
-            .success()
-    );
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert!(
         String::from_utf8(version.stdout)
@@ -188,7 +181,19 @@ fn explicit_setup() {
     let codex = bin_dir.join("codex");
     fs::write(
         &codex,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"mcp list --json\" ]; then\n  if [ -f \"$CODEX_HOME/installed\" ]; then printf '[{\"name\":\"prof-mcp\",\"enabled\":true,\"transport\":{\"type\":\"stdio\",\"command\":\"prof-mcp\",\"args\":[\"serve\",\"--mcp\"],\"env\":null,\"env_vars\":[],\"cwd\":null},\"startup_timeout_sec\":null,\"tool_timeout_sec\":null}]\\n'; else printf '[]\\n'; fi\n  exit 0\nfi\nprintf '%s\\n' \"$*\" >> \"$CODEX_HOME/calls\"\nif [ \"$1 $2 $3\" = \"mcp add prof-mcp\" ]; then : > \"$CODEX_HOME/installed\"; fi\n",
+        r#"#!/bin/sh
+if [ "$1 $2 $3" = "mcp list --json" ]; then
+  remote='{"name":"remote","enabled":true,"transport":{"type":"streamable_http","url":"https://example.test/mcp"}}'
+  if [ -f "$CODEX_HOME/installed" ]; then
+    printf '[%s,{"name":"prof-mcp","enabled":true,"transport":{"type":"stdio","command":"prof-mcp","args":["serve"],"env":null,"env_vars":[],"cwd":null},"startup_timeout_sec":null,"tool_timeout_sec":null}]\n' "$remote"
+  else
+    printf '[%s]\n' "$remote"
+  fi
+  exit 0
+fi
+printf '%s\n' "$*" >> "$CODEX_HOME/calls"
+if [ "$1 $2 $3" = "mcp add prof-mcp" ]; then : > "$CODEX_HOME/installed"; fi
+"#,
     )
     .unwrap();
     fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
@@ -213,7 +218,7 @@ fn explicit_setup() {
         "# Personal guidance\n"
     );
     let calls = fs::read_to_string(codex_home.join("calls")).unwrap();
-    assert!(calls.contains("mcp add prof-mcp -- prof-mcp serve --mcp"));
+    assert!(calls.contains("mcp add prof-mcp -- prof-mcp serve"));
     assert_eq!(calls.lines().count(), 1);
 }
 
@@ -298,6 +303,81 @@ exit 3
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn setup_rollback() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    for legacy in [false, true] {
+        for failure in ["exit", "json", "mismatch"] {
+            let sandbox = tempdir().unwrap();
+            let bin_dir = sandbox.path().join("bin");
+            let codex_home = sandbox.path().join("codex-home");
+            fs::create_dir_all(&bin_dir).unwrap();
+            fs::create_dir_all(&codex_home).unwrap();
+            if legacy {
+                fs::write(codex_home.join("state"), "legacy").unwrap();
+            }
+            let prof = bin_dir.join("prof-mcp");
+            symlink(env!("CARGO_BIN_EXE_prof-mcp"), &prof).unwrap();
+            let codex = bin_dir.join("codex");
+            fs::write(
+                &codex,
+                r#"#!/bin/sh
+if [ "$1 $2 $3" = "mcp list --json" ]; then
+  if [ -f "$CODEX_HOME/new-install" ]; then
+    case "$SETUP_FAILURE" in
+      exit) echo 'verification failed' >&2; exit 9;;
+      json) printf '{'; exit 0;;
+      mismatch) printf '[]\n'; exit 0;;
+    esac
+  fi
+  if [ -f "$CODEX_HOME/state" ]; then
+    printf '[{"name":"prof-mcp","enabled":true,"transport":{"type":"stdio","command":"prof-mcp","args":[]}}]\n'
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+if [ "$1 $2 $3" = "mcp remove prof-mcp" ]; then /bin/rm -f "$CODEX_HOME/state"; exit 0; fi
+if [ "$1 $2 $3" = "mcp add prof-mcp" ]; then
+  if [ "$6" = "serve" ]; then
+    printf 'new' > "$CODEX_HOME/state"
+    : > "$CODEX_HOME/new-install"
+  else
+    printf 'legacy' > "$CODEX_HOME/state"
+  fi
+  exit 0
+fi
+exit 3
+"#,
+            )
+            .unwrap();
+            fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+            let output = Command::new(&prof)
+                .arg("setup")
+                .env("CODEX_HOME", &codex_home)
+                .env("PATH", &bin_dir)
+                .env("SETUP_FAILURE", failure)
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "legacy={legacy}, failure={failure}"
+            );
+            assert!(codex_home.join("new-install").exists());
+            if legacy {
+                assert_eq!(
+                    fs::read_to_string(codex_home.join("state")).unwrap(),
+                    "legacy"
+                );
+            } else {
+                assert!(!codex_home.join("state").exists());
+            }
+        }
+    }
+}
+
 #[test]
 fn no_arguments_show_help() {
     let workspace = tempdir().unwrap();
@@ -342,4 +422,19 @@ fn register_stdin() {
     let resolved = prof_mcp::registry::resolve(root.path(), None).unwrap();
     assert_eq!(resolved.alias, "base");
     assert_eq!(fs::read(resolved.path).unwrap(), b"root;leaf 7\n");
+}
+
+#[test]
+fn removed_flags_are_rejected() {
+    for args in [
+        vec!["serve", "--mcp"],
+        vec!["--cache-capacity", "8"],
+        vec!["--log-level", "warn"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+    }
 }

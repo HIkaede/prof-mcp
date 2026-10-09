@@ -490,6 +490,17 @@ fn reader_matches_file() {
     .unwrap();
     assert_eq!(file.fingerprint, stream.fingerprint);
     assert_eq!(file.byte_len, stream.byte_len);
+    let builder = prof_mcp::profile::ProfileBuilder::new(Default::default());
+    let parse = |root| {
+        let resolved = registry::resolve(root, None).unwrap();
+        builder
+            .from_file(resolved.path, resolved.byte_len, None)
+            .unwrap()
+    };
+    assert_eq!(
+        prof_mcp::query::summary(&parse(file_root.path())),
+        prof_mcp::query::summary(&parse(stream_root.path()))
+    );
     for root in [file_root.path(), stream_root.path()] {
         let resolved = registry::resolve(root, None).unwrap();
         assert_eq!(resolved.alias, "base");
@@ -592,4 +603,191 @@ fn reader_stops_at_limit() {
     assert_eq!(error.code, "profile_too_large");
     assert_eq!(input.0, 65);
     assert!(!root.path().join(".prof-mcp").exists());
+}
+
+#[test]
+fn persistence_failure_is_atomic() {
+    let root = tempdir().unwrap();
+    let original = b"root;good 1\n";
+    registry::register_reader(
+        root.path(),
+        &original[..],
+        "stdin.folded",
+        Some("base"),
+        1024,
+    )
+    .unwrap();
+    let state = root.path().join(".prof-mcp");
+    let manifest = state.join("manifest.json");
+    let before = fs::read(&manifest).unwrap();
+    let replacement = b"root;new 2\n";
+    let fingerprint = blake3::hash(replacement).to_hex().to_string();
+    let blob = state.join(format!("profiles/{fingerprint}.folded"));
+    for destination in [&blob, &manifest] {
+        let blocker = destination.parent().unwrap().join(format!(
+            ".{}.{}.tmp",
+            destination.file_name().unwrap().to_str().unwrap(),
+            std::process::id()
+        ));
+        fs::create_dir(&blocker).unwrap();
+        let result = registry::register_reader(
+            root.path(),
+            &replacement[..],
+            "stdin.folded",
+            Some("new"),
+            1024,
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        assert!(!blob.exists());
+        assert_eq!(registry::resolve(root.path(), None).unwrap().alias, "base");
+        fs::remove_dir(blocker).unwrap();
+    }
+    registry::register_reader(
+        root.path(),
+        &replacement[..],
+        "stdin.folded",
+        Some("new"),
+        1024,
+    )
+    .unwrap();
+    assert_eq!(registry::resolve(root.path(), None).unwrap().alias, "new");
+}
+
+#[test]
+fn reject_corrupt_deduplication() {
+    let root = tempdir().unwrap();
+    let bytes = b"root;good 1\n";
+    registry::register_reader(root.path(), &bytes[..], "stdin.folded", Some("base"), 1024).unwrap();
+    let resolved = registry::resolve(root.path(), None).unwrap();
+    let manifest = root.path().join(".prof-mcp/manifest.json");
+    let before = fs::read(&manifest).unwrap();
+    for corruption in [&b"root;evil 1\n"[..], &b"short"[..]] {
+        fs::write(&resolved.path, corruption).unwrap();
+        assert_eq!(
+            registry::register_reader(root.path(), &bytes[..], "stdin.folded", Some("new"), 1024)
+                .unwrap_err()
+                .code,
+            "registry_corrupt"
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        assert_eq!(fs::read(&resolved.path).unwrap(), corruption);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn register_with_bounded_memory() {
+    use std::io::{BufWriter, Write};
+    use std::process::Command;
+
+    let root = tempdir().unwrap();
+    let source = root.path().join("large.folded");
+    let mut writer = BufWriter::new(fs::File::create(&source).unwrap());
+    let mut line = [b' '; 8192];
+    line[..11].copy_from_slice(b"root;leaf 1");
+    line[8191] = b'\n';
+    for _ in 0..12288 {
+        writer.write_all(&line).unwrap();
+    }
+    writer.flush().unwrap();
+    drop(writer);
+    // A 96 MiB input must fit a 64 MiB address-space limit, including deduplication.
+    for _ in 0..2 {
+        let output = Command::new("bash")
+            .args([
+                "-c",
+                "ulimit -v 65536; exec \"$1\" register \"$2\" --name base",
+                "register-test",
+            ])
+            .arg(env!("CARGO_BIN_EXE_prof-mcp"))
+            .arg(&source)
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let resolved = registry::resolve(root.path(), None).unwrap();
+    assert_eq!(resolved.byte_len, 96 * 1024 * 1024);
+    let parsed = prof_mcp::profile::ProfileBuilder::new(Default::default())
+        .from_file(resolved.path, resolved.byte_len, None)
+        .unwrap();
+    assert_eq!(parsed.total_weight, 12288);
+    assert_eq!(parsed.stacks.len(), 1);
+}
+
+#[test]
+fn manifest_byte_limit_preserves_registry() {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    let workspace = tempdir().unwrap();
+    registry::register_reader(
+        workspace.path(),
+        &b"root;old 1\n"[..],
+        "old.folded",
+        Some("old"),
+        1024,
+    )
+    .unwrap();
+    let path = workspace.path().join(".prof-mcp/manifest.json");
+    let original = fs::read(&path).unwrap();
+    let mut padded = original.clone();
+    padded.resize(LIMIT, b' ');
+    fs::write(&path, &padded).unwrap();
+    assert_eq!(
+        registry::resolve(workspace.path(), None).unwrap().alias,
+        "old"
+    );
+    padded.push(b' ');
+    fs::write(&path, &padded).unwrap();
+    assert_eq!(
+        registry::status(workspace.path()).unwrap_err().code,
+        "registry_too_large"
+    );
+    assert_eq!(
+        registry::resolve(workspace.path(), None).unwrap_err().code,
+        "registry_too_large"
+    );
+    fs::write(&path, &original).unwrap();
+    let error = registry::register_reader(
+        workspace.path(),
+        &b"root;new 1\n"[..],
+        &"x".repeat(LIMIT),
+        Some("new"),
+        1024,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "registry_too_large");
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(registry::status(workspace.path()).unwrap().active, "old");
+    assert_eq!(
+        fs::read_dir(workspace.path().join(".prof-mcp/profiles"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn missing_alias_details_are_bounded() {
+    let workspace = tempdir().unwrap();
+    for index in 0..101 {
+        registry::register_reader(
+            workspace.path(),
+            &b"root 1\n"[..],
+            "input.folded",
+            Some(&format!("p{index:03}")),
+            1024,
+        )
+        .unwrap();
+    }
+    let error = registry::resolve(workspace.path(), Some("missing")).unwrap_err();
+    assert_eq!(error.code, "profile_alias_not_found");
+    assert_eq!(error.details["available"].as_array().unwrap().len(), 100);
+    assert_eq!(error.details["available_count"], 101);
+    assert_eq!(error.details["omitted"], 1);
+    assert_eq!(error.details["available"][0], "p000");
 }

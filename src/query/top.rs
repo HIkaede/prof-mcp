@@ -11,16 +11,16 @@ use super::{
 
 pub fn top(
     profile: &Profile,
-    sort: TopSort,
+    metric: TopSort,
     limit: usize,
-    focus: Option<&FrameSelector>,
+    frame: Option<&FrameSelector>,
     name_regex: Option<&str>,
 ) -> Result<Value, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
-    let focused_id = focus
+    let frame_id = frame
         .map(|selector| resolve_selector(profile, selector))
         .transpose()?;
-    let stack_ids: Vec<_> = match focused_id {
+    let stack_ids: Vec<_> = match frame_id {
         Some(id) => profile.frame_to_stacks[id as usize].clone(),
         None => (0..profile.stacks.len() as u32).collect(),
     };
@@ -28,7 +28,7 @@ pub fn top(
         .iter()
         .map(|id| profile.stacks[*id as usize].weight)
         .sum();
-    let scoped_stats = focused_id.map(|_| subset_stats(profile, &stack_ids));
+    let scoped_stats = frame_id.map(|_| subset_stats(profile, &stack_ids));
     let stats = scoped_stats.as_deref().unwrap_or(&profile.frame_stats);
     let regex = name_regex.map(compile_regex).transpose()?;
     let mut ids: Vec<_> = (0..profile.frames.len() as u32)
@@ -39,7 +39,7 @@ pub fn top(
                     .is_none_or(|re| re.is_match(profile.frame_name(*id)))
         })
         .collect();
-    ids.sort_by(|a, b| frame_order_stats(profile, stats, *a, *b, sort));
+    ids.sort_by(|a, b| frame_order_stats(profile, stats, *a, *b, metric));
     let available = ids.len();
     let truncation_reasons = row_limit_reason(limit, available);
     ids.truncate(limit);
@@ -51,7 +51,7 @@ pub fn top(
                 *id,
                 &stats[*id as usize],
                 scope_weight,
-                metric_weight(&stats[*id as usize], sort),
+                metric_weight(&stats[*id as usize], metric),
             )
         })
         .collect();
@@ -60,7 +60,7 @@ pub fn top(
         scope_weight,
         truncation_reasons,
         Vec::new(),
-        json!({"sort":match sort {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"focus":focused_id,"rows":rows}),
+        json!({"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"frame":frame_id,"rows":rows}),
     ))
 }
 

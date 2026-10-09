@@ -109,11 +109,12 @@ pub(crate) struct TopInput {
     pub profile: Option<String>,
     #[serde(default = "default_self")]
     #[schemars(with = "MetricSchema")]
-    pub sort: String,
+    pub metric: String,
     #[serde(default = "default_top_limit")]
     #[schemars(range(min = 1, max = 200))]
     pub limit: usize,
-    pub focus: Option<FrameSelectorInput>,
+    /// Restrict to complete stacks containing this frame.
+    pub frame: Option<FrameSelectorInput>,
     pub name_regex: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -121,57 +122,77 @@ pub(crate) struct TopInput {
 pub(crate) struct TreeInput {
     #[serde(default)]
     pub profile: Option<String>,
-    #[serde(default)]
-    pub root_node_id: u32,
-    pub profile_fingerprint: Option<String>,
+    /// Copy a returned continuation unchanged; omit profile.
+    pub continuation: Option<Continuation>,
+    /// Edges below the current root.
     #[serde(default = "default_tree_depth")]
     #[schemars(range(min = 0, max = 16))]
     pub max_depth: usize,
+    /// Includes the root.
     #[serde(default = "default_tree_nodes")]
     #[schemars(range(min = 1, max = 512))]
     pub max_nodes: usize,
+    /// Percentage of the current scope.
     #[serde(default = "default_tree_percent")]
     #[schemars(range(min = 0.0, max = 100.0))]
     pub min_scope_percent: f64,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [{"required":["frame"]}, {"required":["continuation"]}]))]
 pub(crate) struct DirectionInput {
     #[serde(default)]
     pub profile: Option<String>,
-    pub frame: FrameSelectorInput,
-    #[serde(default = "default_direction_depth")]
+    /// Exact frame; omit when resuming.
+    pub frame: Option<FrameSelectorInput>,
+    /// Edges below the current root.
+    #[serde(default = "default_tree_depth")]
     #[schemars(range(min = 0, max = 16))]
     pub max_depth: usize,
+    /// Includes the root.
     #[serde(default = "default_tree_nodes")]
     #[schemars(range(min = 1, max = 512))]
     pub max_nodes: usize,
+    /// Percentage of the current scope.
     #[serde(default = "default_tree_percent")]
     #[schemars(range(min = 0.0, max = 100.0))]
     pub min_scope_percent: f64,
-    #[serde(default)]
-    pub continuation: Option<DirectionContinuationInput>,
+    /// Copy a returned continuation unchanged; omit profile and frame.
+    pub continuation: Option<Continuation>,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DirectionContinuationInput {
-    #[serde(default)]
-    #[schemars(length(min = 1, max = 4096))]
-    pub node_path: Vec<u32>,
-    pub profile_fingerprint: String,
+pub(crate) struct Continuation {
+    pub profile: String,
+    pub fingerprint: String,
+    pub tool: ContinuationTool,
+    #[schemars(length(min = 1, max = 4097))]
+    pub cursor: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub(crate) enum ContinuationTool {
+    #[serde(rename = "profile_tree")]
+    Tree,
+    #[serde(rename = "profile_callers")]
+    Callers,
+    #[serde(rename = "profile_callees")]
+    Callees,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PathsInput {
     #[serde(default)]
     pub profile: Option<String>,
-    pub through: FrameSelectorInput,
+    pub frame: FrameSelectorInput,
     #[serde(default = "default_paths_limit")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: usize,
     #[serde(default = "default_max_total_frames")]
     #[schemars(range(min = 1, max = 5000))]
+    /// Total displayed frames across all returned paths.
     pub max_total_frames: usize,
+    /// Display crop; selection and weights stay unchanged.
     pub frame_window: Option<FrameWindowInput>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -237,9 +258,6 @@ fn default_top_limit() -> usize {
 fn default_tree_depth() -> usize {
     4
 }
-fn default_direction_depth() -> usize {
-    5
-}
 fn default_tree_nodes() -> usize {
     64
 }
@@ -262,7 +280,7 @@ pub(crate) fn parse_metric(value: &str) -> Result<TopSort, ApiError> {
         "inclusive" => Ok(TopSort::Inclusive),
         _ => Err(ApiError::new(
             "invalid_budget",
-            "sort/metric must be self or inclusive",
+            "metric must be self or inclusive",
             json!({"value":value}),
             "Use one documented enum value.",
         )),

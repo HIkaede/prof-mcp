@@ -14,6 +14,8 @@ fn recursive_path_positions() {
         1,
     )
     .unwrap();
+    assert_eq!(paths["data"]["frame"], foo);
+    assert!(paths["data"].get("through").is_none());
     assert!(paths["truncated"].as_bool().unwrap());
     assert_eq!(
         paths["data"]["paths"][0]["target_positions"],

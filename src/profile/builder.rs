@@ -5,7 +5,7 @@ use std::{
 };
 
 use blake3::Hasher;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
 use crate::{
     error::{ApiError, ProfileError},
@@ -22,6 +22,9 @@ pub struct BuildLimits {
     pub max_depth: usize,
     pub max_total_weight: u64,
     pub max_frames: usize,
+    pub max_model_bytes: usize,
+    pub max_cct_nodes: usize,
+    pub max_stack_frames: usize,
 }
 impl Default for BuildLimits {
     fn default() -> Self {
@@ -31,6 +34,9 @@ impl Default for BuildLimits {
             max_depth: 4096,
             max_total_weight: (1_u64 << 53) - 1,
             max_frames: u32::MAX as usize,
+            max_model_bytes: 256 * 1024 * 1024,
+            max_cct_nodes: 1_000_000,
+            max_stack_frames: 4_000_000,
         }
     }
 }
@@ -61,6 +67,10 @@ impl ProfileBuilder {
         _byte_len: u64,
         modified_unix_ms: Option<u64>,
     ) -> Result<Profile, ProfileError> {
+        let mut model_bytes = 0usize;
+        charge_model(&mut model_bytes, 256, self.limits.max_model_bytes)?;
+        check_model_limit("cct_nodes", 1, self.limits.max_cct_nodes)?;
+        let mut stack_frames = 0usize;
         let mut interner: HashMap<Box<str>, FrameId> = HashMap::new();
         let mut frame_names = Vec::<Box<str>>::new();
         let mut aggregated: HashMap<Box<[FrameId]>, u64> = HashMap::new();
@@ -120,6 +130,11 @@ impl ProfileBuilder {
                                     "Split the profile into a smaller input.",
                                 ));
                             }
+                            charge_model(
+                                &mut model_bytes,
+                                192usize.saturating_add(name.len().saturating_mul(2)),
+                                self.limits.max_model_bytes,
+                            )?;
                             let owned: Box<str> = name.into();
                             interner.insert(owned.clone(), id);
                             frame_names.push(owned);
@@ -127,7 +142,23 @@ impl ProfileBuilder {
                         }
                     })
                     .collect::<Result<Vec<_>, ApiError>>()?;
-                let entry = aggregated.entry(ids.into_boxed_slice()).or_insert(0);
+                let entry = match aggregated.entry(ids.into_boxed_slice()) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        stack_frames = stack_frames.saturating_add(entry.key().len());
+                        check_model_limit(
+                            "stack_frames",
+                            stack_frames,
+                            self.limits.max_stack_frames,
+                        )?;
+                        charge_model(
+                            &mut model_bytes,
+                            64usize.saturating_add(entry.key().len().saturating_mul(12)),
+                            self.limits.max_model_bytes,
+                        )?;
+                        entry.insert(0)
+                    }
+                };
                 *entry = entry.checked_add(weight).ok_or_else(|| {
                     ApiError::new(
                         "weight_overflow",
@@ -197,6 +228,12 @@ impl ProfileBuilder {
                     if let Some(child) = profile.cct.nodes[node as usize].children.get(&frame) {
                         *child
                     } else {
+                        check_model_limit(
+                            "cct_nodes",
+                            profile.cct.nodes.len().saturating_add(1),
+                            self.limits.max_cct_nodes,
+                        )?;
+                        charge_model(&mut model_bytes, 256, self.limits.max_model_bytes)?;
                         let child = u32::try_from(profile.cct.nodes.len())
                             .expect("bounded by address space");
                         profile.cct.nodes.push(ContextNode {
@@ -258,4 +295,22 @@ fn read_bounded_line<R: BufRead>(
             return Ok(line.len());
         }
     }
+}
+
+// Conservative charges cover container slack, both name copies, and reverse indexes.
+fn charge_model(used: &mut usize, amount: usize, limit: usize) -> Result<(), ApiError> {
+    *used = used.saturating_add(amount);
+    check_model_limit("model_bytes", *used, limit)
+}
+
+fn check_model_limit(resource: &str, actual: usize, limit: usize) -> Result<(), ApiError> {
+    if actual > limit {
+        return Err(ApiError::new(
+            "profile_model_too_large",
+            "Profile exceeds the expanded model budget",
+            serde_json::json!({"resource":resource, "actual":actual, "limit":limit}),
+            "Split the profile into smaller inputs or reduce distinct call paths.",
+        ));
+    }
+    Ok(())
 }

@@ -20,6 +20,8 @@ use rmcp::{
 mod inputs;
 mod outputs;
 mod respond;
+#[cfg(test)]
+mod tests;
 mod tools;
 
 use inputs::parse_input;
@@ -29,8 +31,10 @@ use crate::cache::{LoadedProfile, ProfileCache};
 use crate::config::Config;
 use crate::error::ApiError;
 
+#[derive(Clone)]
 pub struct ProfileServer {
     cache: Arc<ProfileCache>,
+    query_gate: Arc<tokio::sync::Semaphore>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -51,18 +55,40 @@ impl ProfileServer {
         workspace: std::path::PathBuf,
     ) -> Result<Self, ApiError> {
         let max_file_size = config.max_file_size_bytes();
-        let cache = Arc::new(ProfileCache::new(
-            workspace,
-            max_file_size,
-            config.cache_capacity,
-        )?);
+        let cache = Arc::new(ProfileCache::new(workspace, max_file_size, 8)?);
         Ok(Self {
             cache,
+            query_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             tool_router: Self::build_tool_router(),
         })
     }
     async fn profile(&self, reference: Option<&str>) -> Result<LoadedProfile, ApiError> {
         self.cache.load(reference).await
+    }
+
+    async fn query<T: Send + 'static>(
+        &self,
+        load: impl std::future::Future<Output = Result<T, ApiError>> + Send,
+        run: impl FnOnce(T) -> Result<serde_json::Value, ApiError> + Send + 'static,
+    ) -> rmcp::model::CallToolResult {
+        let permit = match self.query_gate.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return respond::failure(ApiError::internal("Query worker unavailable")),
+        };
+        let loaded = match load.await {
+            Ok(loaded) => loaded,
+            Err(error) => return respond::failure(error),
+        };
+        tokio::task::spawn_blocking(move || {
+            // Cancellation retains the permit until computation and response shaping finish.
+            let _permit = permit;
+            match run(loaded) {
+                Ok(value) => respond::success(value),
+                Err(error) => respond::failure(error),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| respond::failure(ApiError::internal("Query worker failed")))
     }
 }
 
@@ -79,7 +105,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 impl ServerHandler for ProfileServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Read-only deterministic queries over folded stack profiles.")
+            .with_instructions("Read-only folded profile queries. Omit profile for the active alias. Resume with continuations[i].continuation unchanged.")
     }
     async fn call_tool(
         &self,

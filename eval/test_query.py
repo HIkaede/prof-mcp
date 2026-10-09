@@ -21,9 +21,14 @@ class TransportTests(unittest.TestCase):
             source.write_text("root;parse 40\nroot;read 10\n")
             subprocess.run([str(BINARY), "register", str(source), "--name", "base"],
                            cwd=workspace, check=True, stdout=subprocess.DEVNULL)
-            result = query(BINARY, workspace, "profile_top", {"limit": 1})
+            result = query(BINARY, workspace, "profile_top", {"metric": "self", "frame": {"frame_name": "root"}, "limit": 1})
             self.assertEqual(result["data"]["rows"][0]["name"], "parse")
             self.assertEqual(result["data"]["rows"][0]["self_weight"], 40)
+            self.assertEqual(result["data"]["metric"], "self")
+            self.assertIsInstance(result["data"]["frame"], int)
+            paths = query(BINARY, workspace, "profile_paths", {"frame": {"frame_name": "parse"}, "limit": 1})
+            self.assertEqual(paths["data"]["paths"][0]["frames"], ["root", "parse"])
+            self.assertIsInstance(paths["data"]["frame"], int)
             self.assertTrue((workspace / "queries.jsonl").is_file())
 
     def test_timeout_reaps_child(self):

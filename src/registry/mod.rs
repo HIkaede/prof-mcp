@@ -21,7 +21,7 @@ use serde_json::json;
 
 use crate::error::ApiError;
 use crate::profile::{BuildLimits, ProfileBuilder};
-use std::io::{Cursor, Read};
+use std::io::{self, BufReader, Read, Seek};
 
 use errors::{
     corrupt, invalid_alias, path_text, profile_too_large, registry_io, serialize_path, source_error,
@@ -35,7 +35,7 @@ use manifest::{
     atomic_write_json, read_manifest_optional, read_manifest_required, safe_profile_path,
     valid_source_name, validate_manifest,
 };
-use persist::atomic_write_bytes;
+use persist::{atomic_copy, files_equal, sync_directory};
 
 #[derive(Clone, Debug)]
 pub struct Registration {
@@ -60,7 +60,7 @@ pub struct RegistryStatus {
     pub profiles: Vec<RegistryProfile>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, schemars::JsonSchema, Serialize)]
 pub struct RegistryProfile {
     pub alias: String,
     pub fingerprint: String,
@@ -151,26 +151,36 @@ pub fn register_reader(
             "Use a single file name.",
         ));
     }
-    let mut bytes = Vec::new();
-    reader
-        .take(max_file_size.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| source_error(Path::new(source_name), error))?;
-    if bytes.len() as u64 > max_file_size {
-        return Err(profile_too_large(bytes.len() as u64, max_file_size));
+    // Spool before parsing so raw input and parsed indexes do not share the heap.
+    let mut spool =
+        tempfile::tempfile().map_err(|error| source_error(Path::new(source_name), error))?;
+    let byte_len = io::copy(
+        &mut reader.take(max_file_size.saturating_add(1)),
+        &mut spool,
+    )
+    .map_err(|error| source_error(Path::new(source_name), error))?;
+    if byte_len > max_file_size {
+        return Err(profile_too_large(byte_len, max_file_size));
     }
+    spool
+        .rewind()
+        .map_err(|error| source_error(Path::new(source_name), error))?;
     let parsed = ProfileBuilder::new(BuildLimits {
         max_file_bytes: max_file_size,
         ..BuildLimits::default()
     })
     .from_reader(
-        Cursor::new(&bytes),
+        BufReader::new(&mut spool),
         PathBuf::from(source_name),
-        bytes.len() as u64,
+        byte_len,
         None,
     )
     .map_err(ApiError::from)?;
-    let fingerprint = parsed.source.fingerprint;
+    let fingerprint = parsed.source.fingerprint.clone();
+    drop(parsed);
+    spool
+        .rewind()
+        .map_err(|error| source_error(Path::new(source_name), error))?;
     let source_name = source_name.to_owned();
 
     let state = workspace.join(REGISTRY_DIR);
@@ -196,7 +206,7 @@ pub fn register_reader(
             fingerprint: fingerprint.clone(),
             file: file.clone(),
             source_name,
-            byte_len: bytes.len() as u64,
+            byte_len,
             registered_unix_ms: unix_ms(),
         },
     );
@@ -204,7 +214,7 @@ pub fn register_reader(
     let destination = state.join(&file);
     let created_blob = match fs::symlink_metadata(&destination) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            atomic_write_bytes(&destination, &bytes)?;
+            atomic_copy(&destination, &mut spool)?;
             true
         }
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_file() => {
@@ -214,18 +224,25 @@ pub fn register_reader(
             ));
         }
         Ok(_) => {
-            if fs::read(&destination).map_err(|error| registry_io(&destination, error))? != bytes {
+            if !files_equal(&mut spool, &destination)
+                .map_err(|error| registry_io(&destination, error))?
+            {
                 return Err(corrupt(
                     "Existing deduplicated profile bytes do not match their fingerprint",
                     json!({"file":file}),
                 ));
             }
+            fs::File::open(&destination)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| registry_io(&destination, error))?;
+            let profiles = state.join(PROFILES_DIR);
+            sync_directory(&profiles).map_err(|error| registry_io(&profiles, error))?;
             false
         }
         Err(error) => return Err(registry_io(&destination, error)),
     };
     if let Err(error) = atomic_write_json(&state.join(MANIFEST), &manifest) {
-        if created_blob {
+        if created_blob && error.details["committed"] != true {
             let _ = fs::remove_file(&destination);
         }
         return Err(error);
@@ -233,7 +250,7 @@ pub fn register_reader(
     Ok(Registration {
         alias,
         fingerprint,
-        byte_len: bytes.len() as u64,
+        byte_len,
     })
 }
 
@@ -289,11 +306,11 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
         ApiError::new(
             "profile_alias_not_found",
             format!("No registered profile alias: {alias}"),
-            json!({"profile":alias,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+            alias_details(&manifest, alias),
             "Register it with prof-mcp register PATH --name ALIAS, or use an existing alias.",
         )
     })?;
-    ensure_profiles_dir(&state)?;
+    ensure_profiles_dir(&state, false)?;
     let path = safe_profile_path(&state, entry)?;
     let metadata = fs::symlink_metadata(&path).map_err(|_| {
         corrupt(
@@ -367,7 +384,7 @@ pub fn set_active(workspace: &Path, alias: &str) -> Result<RegistryStatus, ApiEr
         return Err(ApiError::new(
             "profile_alias_not_found",
             format!("No registered profile alias: {alias}"),
-            json!({"profile":alias,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+            alias_details(&manifest, alias),
             "Run prof-mcp list and select an existing alias.",
         ));
     }
@@ -401,7 +418,7 @@ pub fn remove(
         return Err(ApiError::new(
             "profile_alias_not_found",
             format!("No registered profile alias: {alias}"),
-            json!({"profile":alias,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+            alias_details(&manifest, alias),
             "Run prof-mcp list and select an existing alias.",
         ));
     }
@@ -438,7 +455,7 @@ pub fn remove(
             return Err(ApiError::new(
                 "profile_alias_not_found",
                 format!("No registered replacement alias: {replacement}"),
-                json!({"profile":replacement,"available":manifest.profiles.keys().collect::<Vec<_>>() }),
+                alias_details(&manifest, replacement),
                 "Run prof-mcp list and select an existing alias.",
             ));
         }
@@ -523,4 +540,11 @@ pub fn gc(workspace: &Path, dry_run: bool) -> Result<GcReport, ApiError> {
         removed,
         skipped,
     })
+}
+
+fn alias_details(manifest: &Manifest, alias: &str) -> serde_json::Value {
+    json!({"profile":alias,
+        "available":manifest.profiles.keys().take(100).collect::<Vec<_>>(),
+        "available_count":manifest.profiles.len(),
+        "omitted":manifest.profiles.len().saturating_sub(100)})
 }

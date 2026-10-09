@@ -40,7 +40,10 @@ pub fn paths_with_window_budget(
         .collect();
     stacks.sort_by(|a, b| {
         b.weight.cmp(&a.weight).then_with(|| {
-            frame_sequence(profile, &a.frames).cmp(&frame_sequence(profile, &b.frames))
+            a.frames
+                .iter()
+                .map(|id| profile.frame_name(*id))
+                .cmp(b.frames.iter().map(|id| profile.frame_name(*id)))
         })
     });
     let available = stacks.len();
@@ -174,7 +177,7 @@ pub fn paths_with_window_budget(
         scope,
         truncation_reasons,
         Vec::new(),
-        json!({"through":frame,"paths":rows,"total_frame_budget":total_frame_budget}),
+        json!({"frame":frame,"paths":rows,"total_frame_budget":total_frame_budget}),
     ))
 }
 

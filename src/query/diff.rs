@@ -7,6 +7,16 @@ use super::{
     row_limit_reason,
 };
 
+#[derive(serde::Serialize)]
+struct DiffRow<'a> {
+    name: &'a str,
+    baseline_weight: u64,
+    candidate_weight: u64,
+    baseline_percent: f64,
+    candidate_percent: f64,
+    delta_pp: f64,
+}
+
 pub fn diff(
     baseline: &Profile,
     candidate: &Profile,
@@ -17,30 +27,47 @@ pub fn diff(
 ) -> Result<Value, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
     let regex = name_regex.map(compile_regex).transpose()?;
-    let mut names: Vec<_> = baseline
+    let mut names: Vec<&str> = baseline
         .frames
         .iter()
-        .map(|f| f.name.to_string())
-        .chain(candidate.frames.iter().map(|f| f.name.to_string()))
+        .map(|f| f.name.as_ref())
+        .chain(candidate.frames.iter().map(|f| f.name.as_ref()))
         .collect();
-    names.sort();
+    names.sort_unstable();
     names.dedup();
-    let mut rows: Vec<_> = names.into_iter().filter_map(|name| {
-        if regex.as_ref().is_some_and(|re| !re.is_match(&name)) { return None; }
-        let b = baseline.frame_id(&name).map(|id| &baseline.frame_stats[id as usize]); let c = candidate.frame_id(&name).map(|id| &candidate.frame_stats[id as usize]);
-        let bw = b.map(|s| metric_weight(s, metric)).unwrap_or(0); let cw = c.map(|s| metric_weight(s, metric)).unwrap_or(0);
-        let bp = percent(bw, baseline.total_weight); let cp = percent(cw, candidate.total_weight); let delta = cp - bp;
-        Some(json!({"name":name,"baseline_weight":bw,"candidate_weight":cw,"baseline_percent":bp,"candidate_percent":cp,"delta_pp":delta}))
-    }).collect::<Vec<Value>>();
-    rows.sort_by(|a, b| {
-        let ad = a["delta_pp"].as_f64().unwrap_or(0.0);
-        let bd = b["delta_pp"].as_f64().unwrap_or(0.0);
+    let mut rows: Vec<_> = names
+        .into_iter()
+        .filter_map(|name| {
+            if regex.as_ref().is_some_and(|re| !re.is_match(name)) {
+                return None;
+            }
+            let weight = |profile: &Profile| {
+                profile
+                    .frame_id(name)
+                    .map(|id| metric_weight(&profile.frame_stats[id as usize], metric))
+                    .unwrap_or(0)
+            };
+            let baseline_weight = weight(baseline);
+            let candidate_weight = weight(candidate);
+            let baseline_percent = percent(baseline_weight, baseline.total_weight);
+            let candidate_percent = percent(candidate_weight, candidate.total_weight);
+            Some(DiffRow {
+                name,
+                baseline_weight,
+                candidate_weight,
+                baseline_percent,
+                candidate_percent,
+                delta_pp: candidate_percent - baseline_percent,
+            })
+        })
+        .collect();
+    rows.sort_unstable_by(|a, b| {
         let primary = match sort {
-            DiffSort::Regression => bd.total_cmp(&ad),
-            DiffSort::Improvement => ad.total_cmp(&bd),
-            DiffSort::Absolute => bd.abs().total_cmp(&ad.abs()),
+            DiffSort::Regression => b.delta_pp.total_cmp(&a.delta_pp),
+            DiffSort::Improvement => a.delta_pp.total_cmp(&b.delta_pp),
+            DiffSort::Absolute => b.delta_pp.abs().total_cmp(&a.delta_pp.abs()),
         };
-        primary.then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+        primary.then_with(|| a.name.cmp(b.name))
     });
     let available = rows.len();
     let truncation_reasons = row_limit_reason(limit, available);

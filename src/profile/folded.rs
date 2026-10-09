@@ -44,7 +44,7 @@ pub fn parse_line(
             "Folded stack weights must be positive.",
         ));
     }
-    let frames: Vec<_> = stack.split(';').collect();
+    let frames: Vec<_> = stack.split(';').take(max_depth.saturating_add(1)).collect();
     if frames.iter().any(|frame| frame.is_empty()) {
         return Err(invalid_line(line_no, bytes, "has an empty frame"));
     }

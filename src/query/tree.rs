@@ -20,9 +20,9 @@ pub fn tree(
         let expected = expected_fingerprint.ok_or_else(|| {
             ApiError::new(
                 "profile_changed",
-                "Non-root tree continuation requires profile_fingerprint",
-                json!({"root_node_id":root_node_id}),
-                "Pass the fingerprint returned by the previous profile_tree result.",
+                "Tree continuation requires a profile fingerprint",
+                json!({"cursor_node_id":root_node_id}),
+                "Copy a returned continuation unchanged, or restart without continuation.",
             )
         })?;
         if expected != profile.source.fingerprint {
@@ -30,7 +30,7 @@ pub fn tree(
                 "profile_changed",
                 "Profile fingerprint no longer matches this tree continuation",
                 json!({"expected_fingerprint":expected,"current_fingerprint":profile.source.fingerprint}),
-                "Restart at root_node_id 0 after reloading the profile.",
+                "Restart the query without continuation.",
             ));
         }
     }
@@ -41,9 +41,9 @@ pub fn tree(
         .ok_or_else(|| {
             ApiError::new(
                 "invalid_node_id",
-                format!("Unknown CCT node id: {root_node_id}"),
-                json!({"root_node_id":root_node_id}),
-                "Start with root_node_id 0 or use a node_id returned for this profile fingerprint.",
+                format!("Unknown tree continuation cursor node: {root_node_id}"),
+                json!({"cursor_node_id":root_node_id}),
+                "Restart without continuation, or copy a returned continuation unchanged.",
             )
         })?;
     let mut budget = max_nodes;

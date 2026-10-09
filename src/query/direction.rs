@@ -58,47 +58,14 @@ fn directional(
 ) -> Result<Value, ApiError> {
     check_budget(max_depth, max_nodes, min_scope_percent)?;
     let frame = resolve_selector(profile, selector)?;
-    let mut root = TempNode::new(frame);
-    let mut scope = 0;
-    for stack_id in &profile.frame_to_stacks[frame as usize] {
-        let stack = &profile.stacks[*stack_id as usize];
-        let positions: Vec<_> = stack
-            .frames
-            .iter()
-            .enumerate()
-            .filter_map(|(index, id)| (*id == frame).then_some(index))
-            .collect();
-        let anchor = if callers {
-            *positions.last().expect("index points to frame")
-        } else {
-            positions[0]
-        };
-        scope += stack.weight;
-        root.total_weight += stack.weight;
-        let walk: Vec<_> = if callers {
-            (0..anchor).rev().map(|index| stack.frames[index]).collect()
-        } else {
-            ((anchor + 1)..stack.frames.len())
-                .map(|index| stack.frames[index])
-                .collect()
-        };
-        if walk.is_empty() {
-            root.self_weight += stack.weight;
-        } else {
-            root.insert(&walk, stack.weight);
-        }
-    }
-    // Resolve the continuation target before rendering. The temp tree is a
-    // deterministic function of (profile fingerprint, frame, direction), so a
-    // node_path from an earlier response addresses the same subtree here.
-    let mut render_root: &TempNode = &root;
+    let prefix = continuation.map(|(path, _)| path).unwrap_or_default();
     if let Some((node_path, expected_fingerprint)) = continuation {
         if node_path.is_empty() || node_path.len() > 4096 {
             return Err(ApiError::new(
                 "invalid_node_id",
-                "continuation.node_path must contain between 1 and 4096 frame ids",
-                json!({"node_path_len":node_path.len()}),
-                "Use a node_path returned by this direction query's continuations.",
+                "Continuation cursor must contain an anchor and between 1 and 4096 path frame ids",
+                json!({"cursor_path_length":node_path.len()}),
+                "Copy a returned continuation unchanged, or restart with frame and no continuation.",
             ));
         }
         if expected_fingerprint != profile.source.fingerprint {
@@ -109,23 +76,63 @@ fn directional(
                 "Restart from the anchor frame without continuation.",
             ));
         }
-        let mut current = &root;
-        for frame_id in node_path {
-            match current.children.get(frame_id) {
-                Some(child) => current = child,
-                None => {
-                    return Err(ApiError::new(
-                        "invalid_node_id",
-                        format!("Unknown continuation node_path at frame id {frame_id}"),
-                        json!({"node_path":node_path}),
-                        "Restart from the anchor frame; the omitted subtree shape changed.",
-                    ));
-                }
-            }
-        }
-        render_root = current;
-        scope = current.total_weight;
     }
+    let mut root = TempNode::new(prefix.last().copied().unwrap_or(frame));
+    let mut work_remaining = MAX_DIRECTION_NODES - 1;
+    for stack_id in &profile.frame_to_stacks[frame as usize] {
+        let stack = &profile.stacks[*stack_id as usize];
+        let anchor = if callers {
+            stack.frames.iter().rposition(|id| *id == frame)
+        } else {
+            stack.frames.iter().position(|id| *id == frame)
+        }
+        .expect("index points to frame");
+        let walk_len = if callers {
+            anchor
+        } else {
+            stack.frames.len() - anchor - 1
+        };
+        let frame_at = |offset: usize| {
+            stack.frames[if callers {
+                anchor - offset - 1
+            } else {
+                anchor + offset + 1
+            }]
+        };
+        if prefix
+            .iter()
+            .enumerate()
+            .any(|(offset, id)| offset >= walk_len || frame_at(offset) != *id)
+        {
+            continue;
+        }
+        root.total_weight += stack.weight;
+        let remaining_len = walk_len - prefix.len();
+        if remaining_len == 0 {
+            root.self_weight += stack.weight;
+        } else {
+            // One boundary layer keeps omitted weights and continuation paths exact.
+            let walk: Vec<_> = (prefix.len()..walk_len)
+                .take(max_depth + 1)
+                .map(frame_at)
+                .collect();
+            root.insert(
+                &walk,
+                stack.weight,
+                remaining_len == walk.len(),
+                &mut work_remaining,
+            )?;
+        }
+    }
+    if root.total_weight == 0 {
+        return Err(ApiError::new(
+            "invalid_node_id",
+            "Unknown continuation cursor path",
+            json!({"cursor_path":prefix}),
+            "Restart with frame and no continuation; the omitted subtree shape changed.",
+        ));
+    }
+    let scope = root.total_weight;
     let mut budget = max_nodes;
     let mut reason_stats = BTreeMap::new();
     let mut continuations = Vec::new();
@@ -143,7 +150,7 @@ fn directional(
             .map(|(path, _)| path.to_vec())
             .unwrap_or_default(),
     };
-    let (node, _) = render_temp(profile, render_root, 0, &mut render);
+    let (node, _) = render_temp(profile, &root, 0, &mut render);
     let truncation_reasons =
         tree_reason_values(&reason_stats, max_depth, max_nodes, min_scope_percent);
     Ok(envelope(
@@ -163,6 +170,8 @@ fn directional(
     ))
 }
 
+const MAX_DIRECTION_NODES: usize = 100_000;
+
 #[derive(Default)]
 struct TempNode {
     frame: FrameId,
@@ -178,18 +187,38 @@ impl TempNode {
             ..Self::default()
         }
     }
-    fn insert(&mut self, frames: &[FrameId], weight: u64) {
+    fn insert(
+        &mut self,
+        frames: &[FrameId],
+        weight: u64,
+        complete: bool,
+        work_remaining: &mut usize,
+    ) -> Result<(), ApiError> {
         let frame = frames[0];
-        let child = self
-            .children
-            .entry(frame)
-            .or_insert_with(|| TempNode::new(frame));
+        let child = match self.children.entry(frame) {
+            hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            hashbrown::hash_map::Entry::Vacant(entry) => {
+                if *work_remaining == 0 {
+                    return Err(ApiError::new(
+                        "query_too_large",
+                        "Direction query exceeds its working node budget",
+                        json!({"resource":"direction_nodes", "limit":MAX_DIRECTION_NODES}),
+                        "Use a shallower max_depth or a narrower continuation subtree.",
+                    ));
+                }
+                *work_remaining -= 1;
+                entry.insert(TempNode::new(frame))
+            }
+        };
         child.total_weight += weight;
         if frames.len() == 1 {
-            child.self_weight += weight;
+            if complete {
+                child.self_weight += weight;
+            }
         } else {
-            child.insert(&frames[1..], weight);
+            child.insert(&frames[1..], weight, complete, work_remaining)?;
         }
+        Ok(())
     }
 }
 
@@ -260,4 +289,26 @@ fn render_temp(
         json!({"node_id":Value::Null,"frame_id":node.frame,"name":profile.frame_name(node.frame),"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,state.scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
         truncated,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direction_budget() {
+        let mut root = TempNode::new(0);
+        let mut budget = 2;
+        root.insert(&[1, 2], 7, false, &mut budget).unwrap();
+        let child = &root.children[&1].children[&2];
+        assert_eq!((child.total_weight, child.self_weight), (7, 0));
+        assert!(child.children.is_empty());
+        root.insert(&[1, 2], 3, true, &mut budget).unwrap();
+        let child = &root.children[&1].children[&2];
+        assert_eq!((child.total_weight, child.self_weight), (10, 3));
+        assert_eq!(budget, 0);
+        let error = root.insert(&[1, 3], 1, true, &mut budget).unwrap_err();
+        assert_eq!(error.code, "query_too_large");
+        assert!(!root.children[&1].children.contains_key(&3));
+    }
 }

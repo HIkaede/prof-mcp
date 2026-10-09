@@ -25,6 +25,17 @@ fn parse_process_names() {
 }
 
 #[test]
+fn process_whitespace() {
+    let input = "a  b 12 1.0: 1 cycles:\n  7 leaf (/tmp/a)\n\na b 12 [000] 2.0: 2 cycles:\n  7 leaf (/tmp/a)\n\na\tb 12/13 [001] 3.0: 3 cycles:\n  7 leaf (/tmp/a)\n";
+    let mut output = Vec::new();
+    collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
+    assert_eq!(
+        output,
+        b"a\tb;leaf [/tmp/a] 3\na  b;leaf [/tmp/a] 1\na b;leaf [/tmp/a] 2\n"
+    );
+}
+
+#[test]
 fn preserve_symbol_names() {
     for (raw, expected) in [
         ("overload(int)+0x4", "overload(int)"),
@@ -229,11 +240,39 @@ fn preserve_path_parentheses() {
         "/tmp/lib foo).so",
         "/tmp/lib (copy).so",
         "/tmp/lib(foo.so (deleted)",
+        "/tmp/dir (/nested)/lib.so",
+        "/tmp/dir ([nested])/lib.so",
     ] {
         let input = format!("worker 12 1.0: 1 cycles:\n  7 foo ({module})\n");
         let mut output = Vec::new();
         collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
-        assert_eq!(output, format!("worker;foo [{module}] 1\n").as_bytes());
+        assert_eq!(
+            output,
+            format!("worker;foo [{}] 1\n", super::encode_frame(module)).as_bytes()
+        );
+    }
+}
+
+#[test]
+fn symbol_path_prefixes() {
+    for symbol in ["foo (/argument)", "foo ([argument])"] {
+        for module in [
+            "/tmp/lib.so",
+            "lib.so",
+            "[kernel.kallsyms]",
+            "/tmp/lib(foo.so",
+            "/tmp/lib)foo.so",
+            "/tmp/dir (/nested)/lib.so",
+        ] {
+            assert_eq!(
+                parse_stack_line(&format!("  7 {symbol} ({module})")),
+                Some(format!(
+                    "{} [{}]",
+                    super::encode_frame(symbol),
+                    super::encode_frame(module)
+                ))
+            );
+        }
     }
 }
 

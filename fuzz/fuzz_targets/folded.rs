@@ -13,6 +13,7 @@ fuzz_target!(|input: &[u8]| {
         max_depth: 64,
         max_frames: 4096,
         max_total_weight: 1_000_000,
+        ..BuildLimits::default()
     };
     let parse = || {
         ProfileBuilder::new(limits).from_reader(

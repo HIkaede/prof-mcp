@@ -103,3 +103,67 @@ fn diff_totals_are_descriptive() {
         assert_eq!(result["scope_weight"]["candidate"], weight);
     }
 }
+
+#[test]
+fn bounded_diff_keeps_order() {
+    let baseline = support::profile("root;alpha 10\nroot;beta 20\nroot;gamma 70\n");
+    let candidate = support::profile("root;alpha 20\nroot;beta 10\nroot;delta 70\n");
+    for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
+        for (sort, names) in [
+            (
+                DiffSort::Regression,
+                ["delta", "alpha", "root", "beta", "gamma"],
+            ),
+            (
+                DiffSort::Improvement,
+                ["gamma", "beta", "root", "alpha", "delta"],
+            ),
+            (
+                DiffSort::Absolute,
+                ["delta", "gamma", "alpha", "beta", "root"],
+            ),
+        ] {
+            for regex in [None, Some("^(alpha|beta|delta|gamma)$")] {
+                let expected: Vec<_> = names
+                    .into_iter()
+                    .filter(|name| regex.is_none() || *name != "root")
+                    .collect();
+                for limit in 1..=5 {
+                    let result =
+                        query::diff(&baseline, &candidate, metric, sort, limit, regex).unwrap();
+                    let rows = result["data"]["rows"].as_array().unwrap();
+                    let actual: Vec<_> = rows
+                        .iter()
+                        .map(|row| row["name"].as_str().unwrap())
+                        .collect();
+                    assert_eq!(actual, expected[..limit.min(expected.len())]);
+                    assert_eq!(result["truncated"], expected.len() > limit);
+                    if expected.len() > limit {
+                        assert_eq!(result["truncation_reasons"][0]["available"], expected.len());
+                    }
+                    for row in rows {
+                        let (bw, cw) = match row["name"].as_str().unwrap() {
+                            "alpha" => (10, 20),
+                            "beta" => (20, 10),
+                            "gamma" => (70, 0),
+                            "delta" => (0, 70),
+                            "root" => match metric {
+                                TopSort::SelfWeight => (0, 0),
+                                TopSort::Inclusive => (100, 100),
+                            },
+                            _ => unreachable!(),
+                        };
+                        assert_eq!(
+                            *row,
+                            serde_json::json!({
+                                "name": row["name"], "baseline_weight": bw, "candidate_weight": cw,
+                                "baseline_percent": bw as f64, "candidate_percent": cw as f64,
+                                "delta_pp": (cw - bw) as f64
+                            })
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

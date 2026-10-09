@@ -13,6 +13,7 @@ fuzz_target!(|input: &[u8]| {
         max_depth: 64,
         max_frames: u32::MAX as usize,
         max_total_weight: 1_000_000,
+        ..BuildLimits::default()
     };
     let collapse = || {
         let mut output = Vec::new();

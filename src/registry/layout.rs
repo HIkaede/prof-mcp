@@ -7,7 +7,7 @@ use serde_json::json;
 
 use super::errors::{corrupt, path_text, registry_io};
 use super::manifest::valid_fingerprint;
-use super::persist::atomic_write_bytes;
+use super::persist::{atomic_write_bytes, sync_directory};
 use crate::error::ApiError;
 
 pub(crate) const REGISTRY_DIR: &str = ".prof-mcp";
@@ -28,12 +28,12 @@ pub(crate) fn profile_file(fingerprint: &str) -> String {
 
 pub(crate) fn ensure_registry_layout(state: &Path) -> Result<(), ApiError> {
     ensure_real_directory(state, true, "Workspace .prof-mcp path")?;
-    ensure_profiles_dir(state)?;
+    ensure_profiles_dir(state, true)?;
     ensure_ignore_file(state)
 }
 
-pub(crate) fn ensure_profiles_dir(state: &Path) -> Result<(), ApiError> {
-    ensure_real_directory(&state.join(PROFILES_DIR), true, "Registry profiles path")
+pub(crate) fn ensure_profiles_dir(state: &Path, create: bool) -> Result<(), ApiError> {
+    ensure_real_directory(&state.join(PROFILES_DIR), create, "Registry profiles path")
 }
 
 pub(crate) fn ensure_ignore_file(state: &Path) -> Result<(), ApiError> {
@@ -79,7 +79,12 @@ pub(crate) fn ensure_real_directory(
         }
         Ok(_) => Ok(()),
         Err(error) => Err(registry_io(path, error)),
+    }?;
+    if create_if_missing {
+        let parent = path.parent().expect("registry directory has parent");
+        sync_directory(parent).map_err(|error| registry_io(parent, error))?;
     }
+    Ok(())
 }
 
 pub(crate) fn is_profile_blob_name(name: &std::ffi::OsStr) -> bool {

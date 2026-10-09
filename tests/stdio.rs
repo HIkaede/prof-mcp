@@ -23,7 +23,7 @@ struct StdioServer {
 impl StdioServer {
     fn start(workspace: &std::path::Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
-            .args(["serve", "--mcp"])
+            .args(["serve"])
             .current_dir(workspace)
             .env("RUST_LOG", "debug")
             .stdin(Stdio::piped())

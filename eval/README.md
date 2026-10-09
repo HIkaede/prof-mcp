@@ -1,6 +1,6 @@
 # Capture and agent evaluation
 
-These development tools exercise the 1.0 boundary. They use Python 3's standard
+These development tools exercise the current MCP and capture boundary. They use Python 3's standard
 library and run separately from the shipped MCP server. Generated answers,
 query logs and scores live in the ignored local `results/` directory.
 
@@ -32,6 +32,37 @@ The native scripts tested merge DSO distinctions and unknown addresses, replace
 periods with sample counts, and merge mixed events. These counterexamples support
 retaining the Rust collapse step. Native formatter probes and real capture are
 separate checks.
+
+The final native CLI spike used system perf `7.2.9-300.fc45.x86_64` with actual
+`perf.data`, rather than only calling the Python formatter:
+
+```bash
+perf record -e cpu-clock -g -o /tmp/native.data -- /usr/bin/python3 -c 'sum(i*i for i in range(2000000))'
+perf script report stackcollapse -i /tmp/native.data
+perf report -i /tmp/native.data --stdio --no-children --percent-limit 0 \
+  -g folded,0,caller,function,period
+perf report -i /tmp/native.data --stdio --no-children --percent-limit 0 \
+  -g folded,0,caller,address,period -s comm,dso,symbol
+```
+
+The `stackcollapse` command succeeded and emitted total weight 407 for 407
+samples, while the recorded period total was 101750000. Repeating the recording
+with `-e cpu-clock,task-clock` produced 750 samples; `stackcollapse` accepted them
+and emitted total weight 750 without event separation or rejection.
+
+`perf report` does support period weights: the function-mode folded rows summed
+to 101750000. Its output is a report with headings and weight-before-stack rows,
+not registerable folded text. More importantly, neither function nor address
+mode carries the DSO identity of every frame in the semicolon-separated chain.
+Sorting by `comm,dso,symbol` supplies a histogram entry's DSO, not all ancestor
+DSOs; address mode also splits known functions by instruction offset. Changing
+column order or filtering report headings cannot recover the missing identities.
+For mixed events, report prints separate sections rather than rejecting the input.
+
+Decision: retain Rust collapse over `perf script` records. The tested native CLI
+paths do not supply the complete identity, escaping and event-validation contract.
+This closes the replacement investigation; reopen it only with a concrete native
+pipeline that passes these counterexamples. Raw spike output stays local.
 
 ## Blinded agent trials
 

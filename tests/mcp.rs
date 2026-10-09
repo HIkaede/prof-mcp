@@ -31,12 +31,7 @@ async fn check(workspace: &Path, modern: bool, test: impl AsyncFnOnce(Peer<RoleC
     tokio::time::timeout(Duration::from_secs(10), async {
         let server = ProfileServer::new_in_workspace(
             Config {
-                profile: None,
-                name: None,
-
                 max_file_size_mib: 1,
-                cache_capacity: 2,
-                log_level: "warn".into(),
             },
             workspace.to_owned(),
         )

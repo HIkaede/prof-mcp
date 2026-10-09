@@ -274,18 +274,18 @@ fn parse_event_header(line: &str) -> Option<(String, u64, String)> {
     if !timestamp.is_finite() || timestamp < 0.0 {
         return None;
     }
-    let mut fields: Vec<_> = fields_text.split_whitespace().collect();
-    if fields.last()?.starts_with('[') && fields.last()?.ends_with(']') {
-        fields.pop();
+    let (mut process, mut pid) = fields_text.trim_end().rsplit_once(char::is_whitespace)?;
+    if pid.starts_with('[') && pid.ends_with(']') {
+        (process, pid) = process.trim_end().rsplit_once(char::is_whitespace)?;
     }
-    if !is_pid_field(fields.pop()?) {
+    if !is_pid_field(pid) {
         return None;
     }
-    let process = fields.join(" ");
+    let process = process.trim();
     if process.is_empty() || event.is_empty() {
         return None;
     }
-    Some((process, period, event.to_owned()))
+    Some((process.to_owned(), period, event.to_owned()))
 }
 
 fn is_pid_field(field: &str) -> bool {
@@ -310,8 +310,7 @@ fn parse_stack_line(line: &str) -> Option<String> {
     if !line.ends_with(')') {
         return None;
     }
-    // Paths may contain literal parentheses; prefer the path or bracketed DSO field.
-    let module_start = line.rfind(" (/").max(line.rfind(" ([")).or_else(|| {
+    let balanced_start = {
         let mut nesting = 0_usize;
         line.char_indices()
             .rev()
@@ -328,7 +327,31 @@ fn parse_stack_line(line: &str) -> Option<String> {
             })
             .and_then(|index| index.checked_sub(1))
             .filter(|start| line.as_bytes()[*start] == b' ')
-    })?;
+    };
+    // A path can contain nested prefixes or unpaired parentheses; a symbol's
+    // complete parenthesized argument still belongs before the DSO field.
+    let mut path_start = None;
+    let mut path_depth = 0_isize;
+    for (index, ch) in line.char_indices() {
+        if ch == ' '
+            && path_depth == 0
+            && (line[index..].starts_with(" (/") || line[index..].starts_with(" (["))
+        {
+            path_start = Some(index);
+        }
+        if path_start.is_some() {
+            path_depth += match ch {
+                '(' => 1,
+                ')' => -1,
+                _ => 0,
+            };
+        }
+    }
+    let module_start = match (path_start, balanced_start) {
+        (Some(path), Some(balanced)) if path < balanced && path_depth == 0 => balanced,
+        (Some(path), _) => path,
+        (_, balanced) => balanced?,
+    };
     let frame = &line[..module_start];
     let module = &line[module_start + 2..line.len() - 1];
     let (pc, raw) = frame.split_once(char::is_whitespace)?;

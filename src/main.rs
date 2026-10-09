@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use prof_mcp::{
     capture,
@@ -13,8 +13,7 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::from(&cli);
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -22,12 +21,7 @@ async fn main() -> Result<()> {
         .init();
     match cli.command {
         Some(Command::Setup { dry_run }) => setup::run(dry_run),
-        Some(Command::Serve { mcp }) => {
-            if !mcp {
-                bail!("prof-mcp serve requires --mcp");
-            }
-            run_stdio(config).await
-        }
+        Some(Command::Serve) => run_stdio(config).await,
         Some(Command::Register { profile, name }) => register(&config, &profile, name.as_deref()),
         Some(Command::List) => {
             let status = registry::status(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;

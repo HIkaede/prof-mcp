@@ -50,3 +50,32 @@ async fn reload_repaired_blob() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn concurrent_loads_share_profile() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("large.folded");
+    let input: String = (0..20_000)
+        .map(|i| format!("root;caller{i};leaf{i} 1\n"))
+        .collect();
+    fs::write(&source, input).unwrap();
+    let limit = 2 * 1024 * 1024;
+    registry::register(workspace.path(), &source, Some("base"), limit).unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), limit).unwrap();
+    let cache = ProfileCache::new(workspace.path().to_owned(), limit, 2).unwrap();
+    let mut tasks = Vec::new();
+    for alias in ["base", "candidate", "base", "candidate"] {
+        let cache = cache.clone();
+        tasks.push(tokio::spawn(async move {
+            let loaded = cache.load(Some(alias)).await.unwrap();
+            assert_eq!(loaded.alias, alias);
+            loaded.profile
+        }));
+    }
+    let first = tasks.remove(0).await.unwrap();
+    for task in tasks {
+        let profile = task.await.unwrap();
+        assert!(Arc::ptr_eq(&first, &profile));
+    }
+    assert_eq!(first.total_weight, 20_000);
+}

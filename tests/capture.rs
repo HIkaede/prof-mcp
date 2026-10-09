@@ -141,6 +141,24 @@ fn capture_argv_and_overloads() {
 }
 
 #[test]
+fn capture_identity() {
+    let capture = Capture::new(
+        "a  b 12 1.0: 1 cycles:\n  7 foo (/tmp/dir (/nested)/lib.so)\n\na b 12 [000] 2.0: 2 cycles:\n  7 foo (/tmp/dir (/nested)/lib.so)\n\na  b 12/13 [001] 3.0: 3 cycles:\n  7 foo (/tmp/dir ([nested])/lib.so)\n",
+    );
+    let output = capture.run("success", &["/bin/true"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile = registry::resolve(capture.root.path(), Some("candidate")).unwrap();
+    assert_eq!(
+        fs::read_to_string(profile.path).unwrap(),
+        "a  b;foo [/tmp/dir (%5Bnested%5D)/lib.so] 3\na  b;foo [/tmp/dir (/nested)/lib.so] 1\na b;foo [/tmp/dir (/nested)/lib.so] 2\n"
+    );
+}
+
+#[test]
 fn preserve_registry_on_failure() {
     let huge = format!("{}\n", "x".repeat(1024 * 1024 + 1));
     let deep = format!(

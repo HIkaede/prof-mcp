@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 pub fn run(dry_run: bool) -> Result<()> {
     let command = preferred_command()?;
-    let desired = format!("command={command}; args=serve --mcp");
+    let desired = format!("command={command}; args=serve");
     let current = codex_registration()?;
     let registration = classify_registration(current, &command)?;
     if matches!(registration, ExistingRegistration::Conflict(_)) {
@@ -70,6 +70,7 @@ struct CodexServer {
 struct CodexTransport {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
@@ -124,7 +125,7 @@ fn classify_registration(
     if current.enabled
         && transport.kind == "stdio"
         && transport.command == command
-        && transport.args == ["serve", "--mcp"]
+        && transport.args == ["serve"]
         && transport.env.is_none()
         && transport.env_vars.is_empty()
         && transport.cwd.is_none()
@@ -175,28 +176,25 @@ fn ensure_codex_registration(current: &ExistingRegistration, command: &str) -> R
     if matches!(current, ExistingRegistration::Legacy { .. }) {
         run_codex(&["mcp", "remove", "prof-mcp"])?;
     }
-    if let Err(error) = run_codex(&["mcp", "add", "prof-mcp", "--", command, "serve", "--mcp"]) {
+    let install = (|| -> Result<()> {
+        run_codex(&["mcp", "add", "prof-mcp", "--", command, "serve"])?;
+        if !matches!(
+            classify_registration(codex_registration()?, command)?,
+            ExistingRegistration::Desired
+        ) {
+            bail!(
+                "Codex accepted prof-mcp setup but did not report command={command} with args=serve"
+            );
+        }
+        Ok(())
+    })();
+    if let Err(error) = install {
         if let Err(rollback) = restore_codex_registration(current) {
             return Err(error).context(format!(
                 "Could not install prof-mcp and could not restore the previous registration: {rollback:#}"
             ));
         }
         return Err(error);
-    }
-    let verified = matches!(
-        classify_registration(codex_registration()?, command)?,
-        ExistingRegistration::Desired
-    );
-    if !verified {
-        if let Err(rollback) = restore_codex_registration(current) {
-            bail!(
-                "Codex accepted prof-mcp setup but did not report the requested command/args; \
-                 rollback also failed: {rollback:#}"
-            );
-        }
-        bail!(
-            "Codex accepted prof-mcp setup but did not report command={command} with args=serve --mcp"
-        );
     }
     Ok(true)
 }
@@ -235,7 +233,7 @@ mod tests {
             transport: CodexTransport {
                 kind: "stdio".into(),
                 command: "prof-mcp".into(),
-                args: vec!["serve".into(), "--mcp".into()],
+                args: vec!["serve".into()],
                 env: None,
                 env_vars: Vec::new(),
                 cwd: None,
@@ -257,6 +255,16 @@ mod tests {
         custom.transport.cwd = Some("/workspace".into());
         assert!(matches!(
             classify_registration(Some(custom), "prof-mcp").unwrap(),
+            ExistingRegistration::Conflict(_)
+        ));
+        let remote = serde_json::from_value(serde_json::json!({
+            "name": "prof-mcp",
+            "enabled": true,
+            "transport": {"type": "streamable_http", "url": "https://example.test/mcp"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            classify_registration(Some(remote), "prof-mcp").unwrap(),
             ExistingRegistration::Conflict(_)
         ));
     }

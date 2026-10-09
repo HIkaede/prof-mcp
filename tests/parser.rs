@@ -125,3 +125,55 @@ fn parse_unicode_frames() {
         );
     }
 }
+
+#[test]
+fn model_limits() {
+    let input = b"a;b 2\na;b 3\n";
+    let limits = BuildLimits {
+        max_model_bytes: 2000,
+        max_cct_nodes: 3,
+        max_stack_frames: 2,
+        ..BuildLimits::default()
+    };
+    let profile = ProfileBuilder::new(limits)
+        .from_reader(Cursor::new(input), PathBuf::from("/x"), 0, None)
+        .unwrap();
+    assert_eq!(profile.total_weight, 5);
+    assert_eq!(profile.stacks.len(), 1);
+    assert_eq!(profile.cct.nodes.len(), 3);
+    assert!(profile.estimated_size_bytes() > input.len());
+
+    for (limits, resource) in [
+        (
+            BuildLimits {
+                max_model_bytes: 450,
+                ..BuildLimits::default()
+            },
+            "model_bytes",
+        ),
+        (
+            BuildLimits {
+                max_cct_nodes: 2,
+                ..BuildLimits::default()
+            },
+            "cct_nodes",
+        ),
+        (
+            BuildLimits {
+                max_stack_frames: 1,
+                ..BuildLimits::default()
+            },
+            "stack_frames",
+        ),
+    ] {
+        let error = ProfileBuilder::new(limits)
+            .from_reader(Cursor::new(input), PathBuf::from("/x"), 0, None)
+            .unwrap_err();
+        let error = prof_mcp::error::ApiError::from(error);
+        assert_eq!(error.code, "profile_model_too_large");
+        assert_eq!(error.details["resource"], resource);
+        assert!(
+            error.details["actual"].as_u64().unwrap() > error.details["limit"].as_u64().unwrap()
+        );
+    }
+}

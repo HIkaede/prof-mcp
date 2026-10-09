@@ -15,7 +15,7 @@ pub(crate) fn success(value: Value) -> CallToolResult {
             .expect("structured result retains content"),
     );
     result.content = vec![ContentBlock::text(fallback)];
-    result
+    bounded_result(result)
 }
 pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
     if let Some(profile) = value.get_mut("profile").and_then(Value::as_object_mut) {
@@ -23,6 +23,44 @@ pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
     }
     value
 }
+pub(crate) fn tag_continuations(
+    mut value: Value,
+    alias: &str,
+    tool: super::inputs::ContinuationTool,
+) -> Value {
+    use super::inputs::ContinuationTool;
+    let fingerprint = value["profile"]["fingerprint"].clone();
+    let frame = value["data"]["frame"]["frame_id"].clone();
+    if let Some(rows) = value["data"]["continuations"].as_array_mut() {
+        for row in rows {
+            let cursor = match tool {
+                ContinuationTool::Tree => vec![row["node_id"].clone()],
+                ContinuationTool::Callers | ContinuationTool::Callees => {
+                    let mut cursor = vec![frame.clone()];
+                    cursor.extend(
+                        row["node_path"]
+                            .as_array()
+                            .expect("direction path")
+                            .iter()
+                            .cloned(),
+                    );
+                    cursor
+                }
+            };
+            let row = row.as_object_mut().expect("continuation row");
+            row.remove("profile_fingerprint");
+            row.remove("node_path");
+            row.insert(
+                "continuation".into(),
+                json!({
+                    "profile":alias, "fingerprint":fingerprint, "tool":tool, "cursor":cursor
+                }),
+            );
+        }
+    }
+    value
+}
+
 pub(crate) fn tag_diff_aliases(mut value: Value, baseline: &str, candidate: &str) -> Value {
     if let Some(profile) = value.get_mut("baseline").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(baseline.into()));
@@ -186,8 +224,37 @@ pub(crate) fn failure(error: ApiError) -> CallToolResult {
         "{}: {}",
         error.code, error.message
     )))];
+    bounded_result(result)
+}
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+// Count encoded bytes without allocating a second copy of the response.
+struct ByteBudget(usize);
+impl std::io::Write for ByteBudget {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_sub(bytes.len())
+            .ok_or_else(|| std::io::Error::other("response byte limit exceeded"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+// shortcut: bounds encoded output, not query allocations; budget construction if peak memory becomes a problem.
+fn bounded_result(result: CallToolResult) -> CallToolResult {
+    if serde_json::to_writer(ByteBudget(MAX_RESPONSE_BYTES), &result).is_err() {
+        return failure(ApiError::new(
+            "query_too_large",
+            "Tool response exceeds its byte limit",
+            json!({"resource":"response_bytes", "limit_bytes":MAX_RESPONSE_BYTES}),
+            "Reduce limit, max_nodes, max_depth, max_total_frames, or the path window; narrow symbol filters. If one identity is too large, use a profile with shorter symbols.",
+        ));
+    }
     result
 }
+
 pub(crate) fn bounded_text(input: &str) -> String {
     const TEXT_LIMIT_BYTES: usize = 2048;
     let mut output = String::with_capacity(input.len().min(TEXT_LIMIT_BYTES));
@@ -208,6 +275,30 @@ pub(crate) fn bounded_text(input: &str) -> String {
 #[cfg(test)]
 mod text_tests {
     use super::*;
+
+    #[test]
+    fn count_encoded_response_bytes() {
+        use std::io::Write;
+        let mut budget = ByteBudget(3);
+        assert_eq!(budget.write(b"abc").unwrap(), 3);
+        assert!(budget.write(b"d").is_err());
+        let result = success(json!({"data":"\u{0000}".repeat(MAX_RESPONSE_BYTES / 2)}));
+        assert_eq!(
+            result.structured_content.unwrap()["code"],
+            "query_too_large"
+        );
+        let error = failure(ApiError::new(
+            "bad_input",
+            "small",
+            json!({"input":"x".repeat(MAX_RESPONSE_BYTES)}),
+            "retry",
+        ));
+        assert_eq!(
+            error.structured_content.as_ref().unwrap()["code"],
+            "query_too_large"
+        );
+        assert!(serde_json::to_vec(&error).unwrap().len() <= MAX_RESPONSE_BYTES);
+    }
 
     #[test]
     fn bound_text_safely() {

@@ -14,7 +14,7 @@ folded text. Do not add capture behavior to MCP request handling.
 
 ## Runtime contract
 
-- `prof-mcp serve --mcp` is the MCP stdio entry point and requires `--mcp`.
+- `prof-mcp serve` is the MCP stdio entry point.
 - MCP queries discover the nearest ancestor `.prof-mcp/manifest.json` on every
   query. A server restart must not be required after registration changes.
 - The server exposes exactly these tools, in this order:

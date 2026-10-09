@@ -191,3 +191,42 @@ fn repeated_direction_pages() {
         }
     }
 }
+
+#[test]
+fn deep_continuation() {
+    let input = format!("root;{} 7\n", vec!["a"; 4095].join(";"));
+    let profile = support::profile(&input);
+    let selector = FrameSelector {
+        frame_name: Some("root".into()),
+        frame_id: None,
+    };
+    let a = support::frame(&profile, "a");
+    let prefix = vec![a; 4094];
+    let response = query::callees(
+        &profile,
+        &selector,
+        0,
+        1,
+        0.0,
+        Some((&prefix, &profile.source.fingerprint)),
+    )
+    .unwrap();
+    assert_eq!(response["scope_weight"], 7);
+    assert_eq!(response["data"]["root"]["self_weight"], 0);
+    assert_eq!(response["data"]["root"]["omitted_weight"], 7);
+    let next: Vec<u32> =
+        serde_json::from_value(response["data"]["continuations"][0]["node_path"].clone()).unwrap();
+    assert_eq!(next.len(), 4095);
+    let leaf = query::callees(
+        &profile,
+        &selector,
+        0,
+        1,
+        0.0,
+        Some((&next, &profile.source.fingerprint)),
+    )
+    .unwrap();
+    assert_eq!(leaf["data"]["root"]["self_weight"], 7);
+    assert_eq!(leaf["data"]["root"]["total_weight"], 7);
+    assert_eq!(leaf["data"]["continuations"], serde_json::json!([]));
+}

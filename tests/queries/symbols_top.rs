@@ -42,9 +42,14 @@ fn focused_top_scope() {
     )
     .unwrap();
     assert_eq!(top["scope_weight"], 55);
+    assert_eq!(top["data"]["metric"], "self");
+    assert_eq!(top["data"]["frame"], a);
+    assert!(top["data"].get("sort").is_none());
+    assert!(top["data"].get("focus").is_none());
     assert_eq!(top["data"]["rows"].as_array().unwrap().len(), 2);
     assert_eq!(top["data"]["rows"][0]["name"], "B");
     let self_top = query::top(&profile, TopSort::SelfWeight, 20, None, Some("^A$")).unwrap();
+    assert!(self_top["data"]["frame"].is_null());
     assert_eq!(
         self_top["data"]["rows"][0]["profile_percent"],
         serde_json::json!(100.0 * 5.0 / 55.0)
@@ -187,5 +192,25 @@ fn regex_syntax_and_unicode() {
             .map(|row| row["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, expected, "{pattern}");
+    }
+}
+
+#[test]
+fn summary_names_are_opaque() {
+    for name in [
+        "ordinary",
+        "[unknown]",
+        "[unknown@0x7] [/lib/a.so]",
+        "%5Bunknown%5D",
+    ] {
+        let profile = support::profile(&format!("root;{name} 7\n"));
+        let summary = query::summary(&profile);
+        let data = &summary["data"];
+        assert!(data.get("unknown_frame_weight").is_none());
+        assert_eq!(data["total_weight"], 7);
+        assert_eq!(data["frame_count"], 2);
+        assert_eq!(data["top_self"][0]["name"], name);
+        assert_eq!(data["top_self"][0]["self_weight"], 7);
+        assert_eq!(summary["warnings"].as_array().unwrap().len(), 1);
     }
 }

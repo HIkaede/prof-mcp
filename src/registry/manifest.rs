@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -9,9 +10,11 @@ use serde_json::json;
 
 use super::errors::{corrupt, path_text, registry_io};
 use super::layout::{MANIFEST, profile_file};
-use super::persist::atomic_replace;
+use super::persist::atomic_write_bytes;
 use super::valid_alias;
 use crate::error::ApiError;
+
+pub(crate) const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -59,7 +62,14 @@ pub(crate) fn read_manifest_required(state: &Path) -> Result<Manifest, ApiError>
         }
         Err(error) => return Err(registry_io(&path, error)),
     }
-    let bytes = fs::read(&path).map_err(|error| registry_io(&path, error))?;
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| {
+            file.take((MAX_MANIFEST_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| registry_io(&path, error))?;
+    check_manifest_size(bytes.len())?;
     serde_json::from_slice(&bytes).map_err(|error| {
         corrupt(
             "Registry manifest is not valid schema_version 1 JSON",
@@ -133,5 +143,18 @@ pub(crate) fn atomic_write_json(destination: &Path, manifest: &Manifest) -> Resu
     let mut bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|_| ApiError::internal("Could not serialize registry manifest"))?;
     bytes.push(b'\n');
-    atomic_replace(destination, &bytes)
+    check_manifest_size(bytes.len())?;
+    atomic_write_bytes(destination, &bytes)
+}
+
+fn check_manifest_size(bytes: usize) -> Result<(), ApiError> {
+    if bytes > MAX_MANIFEST_BYTES {
+        return Err(ApiError::new(
+            "registry_too_large",
+            "Registry manifest exceeds its byte limit",
+            json!({"limit_bytes":MAX_MANIFEST_BYTES}),
+            "Use a smaller registry; split aliases across workspaces.",
+        ));
+    }
+    Ok(())
 }
