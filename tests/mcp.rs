@@ -33,7 +33,7 @@ async fn check(workspace: &Path, modern: bool, test: impl AsyncFnOnce(Peer<RoleC
             Config {
                 profile: None,
                 name: None,
-                sample_period_us: None,
+
                 max_file_size_mib: 1,
                 cache_capacity: 2,
                 log_level: "warn".into(),
@@ -78,12 +78,12 @@ async fn sample(test: impl AsyncFnOnce(Peer<RoleClient>)) {
     let root = tempdir().unwrap();
     let source = root.path().join("sample.folded");
     fs::write(&source, "root;A 3\nroot;A;B 2\n").unwrap();
-    registry::register(root.path(), &source, Some("sample"), 1024 * 1024, None).unwrap();
+    registry::register(root.path(), &source, Some("sample"), 1024 * 1024).unwrap();
     check(root.path(), true, test).await;
 }
 
 #[tokio::test]
-async fn mcp_stays_available_without_registry_and_observes_registration_after_start() {
+async fn discover_live_registration() {
     // Registry discovery intentionally walks ancestors. Use tmpfs on Linux so
     // a developer's unrelated `/tmp/.prof-mcp` cannot turn this into a
     // registered-workspace test.
@@ -108,14 +108,7 @@ async fn mcp_stays_available_without_registry_and_observes_registration_after_st
 
         let source = workspace.path().join("started.folded");
         fs::write(&source, "root;visible 1\n").unwrap();
-        registry::register(
-            workspace.path(),
-            &source,
-            Some("visible"),
-            1024 * 1024,
-            None,
-        )
-        .unwrap();
+        registry::register(workspace.path(), &source, Some("visible"), 1024 * 1024).unwrap();
         let available = client
             .call_tool(CallToolRequestParams::new("profile_summary"))
             .await

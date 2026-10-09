@@ -3,23 +3,29 @@ use std::io::Cursor;
 use super::{BuildLimits, collapse_perf_script, parse_stack_line};
 
 #[test]
-fn collapses_default_perf_script_and_filters_other_events() {
-    let input = b"# header\nworker 12 1.0: 2 cpu/cycles/P:\n  7 leaf+0x4 (/tmp/a)\n  8 caller (/tmp/a)\n\nworker 12 2.0: 9 instructions:\n  7 ignored (/tmp/a)\n\nworker 12 3.0: 3 cpu/cycles/P:\n  7 leaf (/tmp/a)\n  8 caller (/tmp/a)\n";
-    let mut output = Vec::new();
-    collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
-    assert_eq!(output, b"worker;caller;leaf 5\n");
+fn reject_mixed_events() {
+    for (first, second) in [("cycles", "instructions"), ("instructions", "cycles")] {
+        let input = format!(
+            "worker 12 1.0: 2 {first}:\n  7 leaf (/tmp/a)\n\nworker 12 2.0: 9 {second}:\n  7 leaf (/tmp/a)\n"
+        );
+        let mut output = Vec::new();
+        let error = collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("multiple event types"));
+        assert!(output.is_empty());
+    }
 }
 
 #[test]
-fn accepts_pid_tid_and_process_names_with_spaces() {
+fn parse_process_names() {
     let input = b"V8 WorkerThread 24636/25607 [000] 1.0: 4 cycles:\n  7 main (/tmp/a)\n\n";
     let mut output = Vec::new();
     collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
-    assert_eq!(output, b"V8_WorkerThread;main 4\n");
+    assert_eq!(output, b"V8 WorkerThread;main [/tmp/a] 4\n");
 }
 
 #[test]
-fn stack_symbols_preserve_signatures_operators_quotes_and_language_names() {
+fn preserve_symbol_names() {
     for (raw, expected) in [
         ("overload(int)+0x4", "overload(int)"),
         ("overload(double)", "overload(double)"),
@@ -36,14 +42,19 @@ fn stack_symbols_preserve_signatures_operators_quotes_and_language_names() {
         ("literal+0x", "literal+0x"),
     ] {
         let line = format!("  7 {raw} (/tmp/a)");
-        assert_eq!(parse_stack_line(&line).unwrap(), expected, "{raw}");
+        assert_eq!(
+            parse_stack_line(&line).unwrap(),
+            format!("{expected} [/tmp/a]"),
+            "{raw}"
+        );
     }
 }
 
 #[test]
-fn collapse_rejects_invalid_nonempty_input_and_unframed_samples() {
+fn reject_malformed_samples() {
     for input in [
         "not perf data\n",
+        "worker 12 1.0: 1 cycles:\n  7 foo @(/tmp/lib(foo.so)\n",
         "worker 12 1.0: 1 cycles:\n  broken stack line\n",
         "worker 12 1.0: 1 cycles:\n\n",
         "worker 12 1.0: 0 cycles:\n  7 leaf (/tmp/a)\n",
@@ -59,7 +70,7 @@ fn collapse_rejects_invalid_nonempty_input_and_unframed_samples() {
 }
 
 #[test]
-fn collapse_enforces_input_line_depth_total_bytes_and_weight_budgets() {
+fn enforce_capture_limits() {
     let input = "worker 12 1.0: 3 cycles:\n  7 leaf (/tmp/a)\n  8 root (/tmp/a)\n\n";
     for limits in [
         BuildLimits {
@@ -89,15 +100,15 @@ fn collapse_enforces_input_line_depth_total_bytes_and_weight_budgets() {
 }
 
 #[test]
-fn indented_headers_default_period_and_numeric_process_names_are_supported() {
+fn parse_header_variants() {
     let input = b"    worker 2 123 [001] 1.0: cycles:\n  7 leaf (/tmp/a)\n\nworker 2 123 [001] 2.0: 2 cycles:\n  7 leaf (/tmp/a)\n";
     let mut output = Vec::new();
     collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
-    assert_eq!(output, b"worker_2;leaf 3\n");
+    assert_eq!(output, b"worker 2;leaf [/tmp/a] 3\n");
 }
 
 #[test]
-fn encoded_output_and_aggregated_weights_obey_serialized_limits() {
+fn bound_folded_output() {
     let input = format!(
         "worker 12 1.0: 1 cycles:\n  7 {} (/tmp/a)\n",
         ";".repeat(100)
@@ -136,7 +147,7 @@ fn encoded_output_and_aggregated_weights_obey_serialized_limits() {
 }
 
 #[test]
-fn writer_failures_are_returned_and_total_weight_overflow_is_rejected() {
+fn reject_write_errors_and_overflow() {
     struct BrokenWriter;
     impl std::io::Write for BrokenWriter {
         fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
@@ -168,4 +179,91 @@ fn writer_failures_are_returned_and_total_weight_overflow_is_rejected() {
         .is_err()
     );
     assert!(output.is_empty());
+}
+
+#[test]
+fn preserve_frame_identity() {
+    let input = "worker 12 1.0: 1 cycles:\n  7 foo (/a/lib.so)\n\nworker 12 2.0: 1 cycles:\n  7 foo (/b/lib.so)\n\nworker 12 3.0: 1 cycles:\n  7 [unknown] ([unknown])\n\nworker 12 4.0: 1 cycles:\n  8 [unknown] ([unknown])\n";
+    let mut output = Vec::new();
+    collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert_eq!(text.lines().count(), 4);
+    assert!(text.contains("foo [/a/lib.so]"));
+    assert!(text.contains("foo [/b/lib.so]"));
+    assert!(text.contains("[unknown@0x7] [%5Bunknown%5D]"));
+    assert!(text.contains("[unknown@0x8] [%5Bunknown%5D]"));
+    assert_ne!(
+        parse_stack_line("  7 foo [bar] (/a)").unwrap(),
+        parse_stack_line("  7 foo (/a [bar])").unwrap()
+    );
+    assert!(parse_stack_line("  7 foo ()").is_none());
+}
+
+#[test]
+fn preserve_deleted_modules() {
+    for pc in ["7", "8"] {
+        assert_eq!(
+            parse_stack_line(&format!("  {pc} [unknown] (/tmp/lib (deleted))")),
+            Some(format!("[unknown@0x{pc}] [/tmp/lib (deleted)]"))
+        );
+    }
+    assert_eq!(
+        parse_stack_line("  7 operator() (int) (/tmp/lib (copy).so)"),
+        Some("operator() (int) [/tmp/lib (copy).so]".into())
+    );
+    for module in ["libfoo.so (deleted)", "lib (copy).so", "[kernel.kallsyms]"] {
+        assert_eq!(
+            parse_stack_line(&format!("  7 foo ({module})")),
+            Some(format!("foo [{}]", super::encode_frame(module)))
+        );
+    }
+    assert!(parse_stack_line("  7 foo (/tmp/lib (deleted").is_none());
+}
+
+#[test]
+fn preserve_path_parentheses() {
+    for module in [
+        "/tmp/lib(foo.so",
+        "/tmp/lib)foo.so",
+        "/tmp/lib (foo.so",
+        "/tmp/lib foo).so",
+        "/tmp/lib (copy).so",
+        "/tmp/lib(foo.so (deleted)",
+    ] {
+        let input = format!("worker 12 1.0: 1 cycles:\n  7 foo ({module})\n");
+        let mut output = Vec::new();
+        collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
+        assert_eq!(output, format!("worker;foo [{module}] 1\n").as_bytes());
+    }
+}
+
+#[test]
+fn unknown_names_are_distinct() {
+    let frames = [
+        ("7 [unknown]", "[unknown@0x7]"),
+        ("8 [unknown]", "[unknown@0x8]"),
+        ("9 [unknown]@0x7", "%5Bunknown%5D@0x7"),
+        ("a [unknown@0x7]", "%5Bunknown@0x7%5D"),
+        ("b %5Bunknown@0x7%5D", "%255Bunknown@0x7%255D"),
+    ];
+    let input = frames
+        .iter()
+        .enumerate()
+        .map(|(index, (frame, _))| {
+            format!(
+                "worker 12 1.0: {} cycles:\n  {frame} (/tmp/a)\n\n",
+                index + 1
+            )
+        })
+        .collect::<String>();
+    let mut output = Vec::new();
+    collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert_eq!(text.lines().count(), frames.len());
+    for (index, (_, name)) in frames.iter().enumerate() {
+        assert!(
+            text.lines()
+                .any(|line| line == format!("worker;{name} [/tmp/a] {}", index + 1))
+        );
+    }
 }

@@ -1,4 +1,4 @@
-//! Workspace-level orientation: totals, shape, hot frames, and strategy hints.
+//! Workspace-level orientation: totals, shape, and hot frames.
 
 use hashbrown::HashMap;
 use serde_json::{Value, json};
@@ -47,12 +47,9 @@ pub fn summary(profile: &Profile) -> Value {
         vec!["Weight unit is opaque; it is not assumed to be time or cycles.".into()];
     if !recursion.is_empty() {
         warnings.push(
-            "Recursive frames detected; their inclusive weights span multiple occurrences per stack and must not be read as exclusive partitions.".into(),
+            "Recursive frames detected; exact-frame inclusive weights count each stack once. Context occurrences can overlap.".into(),
         );
     }
-    warnings.push(
-        "top_inclusive may include process/shared-library structural frames; use profile_top for a denoised self ranking.".into(),
-    );
     envelope(
         profile,
         profile.total_weight,

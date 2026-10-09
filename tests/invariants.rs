@@ -68,7 +68,7 @@ fn stats_by_name(profile: &Profile) -> std::collections::BTreeMap<&str, (u64, u6
 }
 
 #[test]
-fn permutations_and_split_weights_preserve_statistics_rankings_and_zero_diff() {
+fn equivalent_folded_inputs() {
     use prof_mcp::query::{self, DiffSort, FrameSelector, FrameWindow, TopSort};
     let paths = ["root;A;leaf", "root;B;leaf", "root;A;A"];
     let orders = [
@@ -101,13 +101,10 @@ fn permutations_and_split_weights_preserve_statistics_rankings_and_zero_diff() {
                     assert_eq!(baseline.total_weight, candidate.total_weight);
                     assert_eq!(stats_by_name(&baseline), stats_by_name(&candidate));
                     for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
-                        let top = query::top(&candidate, metric, 20, None, None, false).unwrap();
-                        assert_eq!(
-                            top,
-                            query::top(&candidate, metric, 20, None, None, false).unwrap()
-                        );
+                        let top = query::top(&candidate, metric, 20, None, None).unwrap();
+                        assert_eq!(top, query::top(&candidate, metric, 20, None, None).unwrap());
                         let ranked_names = |p: &Profile| {
-                            query::top(p, metric, 20, None, None, false).unwrap()["data"]["rows"]
+                            query::top(p, metric, 20, None, None).unwrap()["data"]["rows"]
                                 .as_array()
                                 .unwrap()
                                 .iter()
@@ -168,6 +165,197 @@ fn permutations_and_split_weights_preserve_statistics_rankings_and_zero_diff() {
                     }
                 }
             }
+        }
+    }
+}
+
+fn next(state: &mut u64) -> u64 {
+    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+    *state >> 32
+}
+
+fn strip_scope(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.remove("scope_percent");
+            for child in object.values_mut() {
+                strip_scope(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                strip_scope(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn find_node(value: &serde_json::Value, id: u64) -> Option<&serde_json::Value> {
+    if value["node_id"] == id {
+        return Some(value);
+    }
+    value["children"]
+        .as_array()?
+        .iter()
+        .find_map(|child| find_node(child, id))
+}
+
+#[test]
+fn generated_stack_algebra() {
+    use prof_mcp::query::{self, DiffSort, FrameSelector, MatchMode, TopSort};
+    for seed in 0..128 {
+        let mut state = seed;
+        let names = ["A", "B", "foo<int>", "foo<double>", "函数", "operator<<"];
+        let mut stacks = vec![("root;A;A".to_owned(), 10)];
+        for _ in 0..24 {
+            let mut frames = vec!["root"];
+            for _ in 0..1 + next(&mut state) % 6 {
+                frames.push(names[next(&mut state) as usize % names.len()]);
+            }
+            stacks.push((frames.join(";"), 2 + next(&mut state) % 100));
+        }
+        let input = stacks
+            .iter()
+            .map(|(s, w)| format!("{s} {w}\n"))
+            .collect::<String>();
+        for i in (1..stacks.len()).rev() {
+            let j = next(&mut state) as usize % (i + 1);
+            stacks.swap(i, j);
+        }
+        let split = stacks
+            .iter()
+            .map(|(s, w)| format!("{s} 1\n{s} {}\n", w - 1))
+            .collect::<String>();
+        let baseline = support::profile(&input);
+        let candidate = support::profile(&split);
+        assert_invariants(&baseline);
+        assert_invariants(&candidate);
+        assert_eq!(
+            stats_by_name(&baseline),
+            stats_by_name(&candidate),
+            "seed={seed}"
+        );
+        for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
+            let diff =
+                query::diff(&baseline, &candidate, metric, DiffSort::Absolute, 200, None).unwrap();
+            assert!(
+                diff["data"]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["delta_pp"] == 0.0)
+            );
+            let ranked = |p: &Profile| {
+                let top = query::top(p, metric, 200, None, None).unwrap();
+                assert_eq!(top, query::top(p, metric, 200, None, None).unwrap());
+                top["data"]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        (
+                            row["name"].clone(),
+                            row["self_weight"].clone(),
+                            row["inclusive_weight"].clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(ranked(&baseline), ranked(&candidate));
+        }
+        for name in names {
+            if baseline.frame_id(name).is_none() {
+                continue;
+            }
+            let selector = FrameSelector {
+                frame_name: Some(name.into()),
+                frame_id: None,
+            };
+            let found = query::find_symbols(&baseline, name, MatchMode::Contains, 100).unwrap();
+            assert_eq!(
+                found,
+                query::find_symbols(&baseline, name, MatchMode::Contains, 100).unwrap()
+            );
+            let paths = query::paths(&baseline, &selector, 50).unwrap();
+            assert_eq!(paths, query::paths(&baseline, &selector, 50).unwrap());
+            assert_eq!(
+                paths["data"]["paths"],
+                query::paths(&candidate, &selector, 50).unwrap()["data"]["paths"]
+            );
+            for row in paths["data"]["paths"].as_array().unwrap() {
+                assert!(
+                    row["frames"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|frame| frame == name)
+                );
+            }
+            for callers in [true, false] {
+                let direction = if callers {
+                    query::callers
+                } else {
+                    query::callees
+                };
+                let full = direction(&baseline, &selector, 16, 512, 0.0, None).unwrap();
+                let page = direction(&baseline, &selector, 1, 4, 0.0, None).unwrap();
+                assert_eq!(
+                    page,
+                    direction(&baseline, &selector, 1, 4, 0.0, None).unwrap()
+                );
+                for continuation in page["data"]["continuations"].as_array().unwrap() {
+                    let path = continuation["node_path"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|id| id.as_u64().unwrap() as u32)
+                        .collect::<Vec<_>>();
+                    let resumed = direction(
+                        &baseline,
+                        &selector,
+                        16,
+                        512,
+                        0.0,
+                        Some((&path, &baseline.source.fingerprint)),
+                    )
+                    .unwrap();
+                    let mut expected = &full["data"]["root"];
+                    for id in &path {
+                        expected = expected["children"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|node| node["frame_id"] == *id)
+                            .unwrap();
+                    }
+                    let mut expected = expected.clone();
+                    let mut actual = resumed["data"]["root"].clone();
+                    strip_scope(&mut expected);
+                    strip_scope(&mut actual);
+                    assert_eq!(expected, actual, "seed={seed}, callers={callers}");
+                }
+            }
+        }
+        let full = query::tree(&baseline, 0, None, 16, 512, 0.0).unwrap();
+        let page = query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap();
+        assert_eq!(page, query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap());
+        for continuation in page["data"]["continuations"].as_array().unwrap() {
+            let id = continuation["node_id"].as_u64().unwrap();
+            let resumed = query::tree(
+                &baseline,
+                id as u32,
+                Some(&baseline.source.fingerprint),
+                16,
+                512,
+                0.0,
+            )
+            .unwrap();
+            let mut expected = find_node(&full["data"]["root"], id).unwrap().clone();
+            let mut actual = resumed["data"]["root"].clone();
+            strip_scope(&mut expected);
+            strip_scope(&mut actual);
+            assert_eq!(expected, actual, "seed={seed}");
         }
     }
 }

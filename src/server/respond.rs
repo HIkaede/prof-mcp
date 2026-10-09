@@ -6,58 +6,29 @@ use serde_json::{Value, json};
 use crate::error::ApiError;
 use crate::registry;
 
-pub(crate) fn success(mut value: Value, text: &str, next_steps: &[&str]) -> CallToolResult {
-    if !next_steps.is_empty()
-        && let Some(object) = value.as_object_mut()
-    {
-        object.insert(
-            "next_steps".into(),
-            Value::Array(
-                next_steps
-                    .iter()
-                    .map(|step| Value::String((*step).to_string()))
-                    .collect(),
-            ),
-        );
-    }
+pub(crate) fn success(value: Value) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
     let fallback = text_fallback(
         result
             .structured_content
             .as_ref()
             .expect("structured result retains content"),
-        text,
     );
     result.content = vec![ContentBlock::text(fallback)];
     result
 }
-pub(crate) fn tag_alias(mut value: Value, alias: &str, sample_period_us: Option<u64>) -> Value {
+pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
     if let Some(profile) = value.get_mut("profile").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(alias.into()));
-        if let Some(period) = sample_period_us {
-            profile["weight_semantics"]["sample_period_us"] = json!(period);
-        }
     }
     value
 }
-pub(crate) fn tag_diff_aliases(
-    mut value: Value,
-    baseline: &str,
-    baseline_period: Option<u64>,
-    candidate: &str,
-    candidate_period: Option<u64>,
-) -> Value {
+pub(crate) fn tag_diff_aliases(mut value: Value, baseline: &str, candidate: &str) -> Value {
     if let Some(profile) = value.get_mut("baseline").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(baseline.into()));
-        if let Some(period) = baseline_period {
-            profile["weight_semantics"]["sample_period_us"] = json!(period);
-        }
     }
     if let Some(profile) = value.get_mut("candidate").and_then(Value::as_object_mut) {
         profile.insert("alias".into(), Value::String(candidate.into()));
-        if let Some(period) = candidate_period {
-            profile["weight_semantics"]["sample_period_us"] = json!(period);
-        }
     }
     value
 }
@@ -111,7 +82,7 @@ pub(crate) fn tag_registry(mut value: Value, status: registry::RegistryStatus) -
     value
 }
 
-pub(crate) fn text_fallback(value: &Value, next: &str) -> String {
+pub(crate) fn text_fallback(value: &Value) -> String {
     let truncated = value["truncated"].as_bool().unwrap_or(false);
     let reasons = value["truncation_reasons"]
         .as_array()
@@ -206,7 +177,7 @@ pub(crate) fn text_fallback(value: &Value, next: &str) -> String {
         format!("scope_weight={}", value["scope_weight"])
     };
     bounded_text(&format!(
-        "profile={alias}; truncated={truncated}; reasons=[{reasons}]; {detail}; {next}"
+        "profile={alias}; truncated={truncated}; reasons=[{reasons}]; {detail}"
     ))
 }
 pub(crate) fn failure(error: ApiError) -> CallToolResult {
@@ -239,7 +210,7 @@ mod text_tests {
     use super::*;
 
     #[test]
-    fn text_fallback_is_utf8_boundary_safe_and_control_safe() {
+    fn bound_text_safely() {
         let long = format!("{}\u{0000}\u{0007}", "多字节🙂".repeat(1024));
         let text = bounded_text(&long);
         assert!(text.len() <= 2048);
@@ -257,7 +228,7 @@ mod text_tests {
     }
 
     #[test]
-    fn summary_bounds_registry_aliases_with_an_explicit_reason() {
+    fn bound_registry_summary() {
         let profiles = (0..101)
             .map(|index| registry::RegistryProfile {
                 alias: format!("p{index}"),
@@ -265,7 +236,6 @@ mod text_tests {
                 source_name: "sample.folded".into(),
                 byte_len: 1,
                 registered_unix_ms: 0,
-                sample_period_us: None,
             })
             .collect();
         let value = tag_registry(

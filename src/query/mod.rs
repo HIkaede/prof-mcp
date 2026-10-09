@@ -205,30 +205,6 @@ pub(crate) fn metric_weight(stats: &FrameStats, sort: TopSort) -> u64 {
     }
 }
 
-/// Strip balanced `<...>` template arguments from a folded frame name.
-///
-/// Falls back to the original name when stripping would erase it entirely or
-/// when brackets never rebalance (for example `operator<<`), so normalization
-/// never invents empty symbols or merges distinct operators.
-pub(crate) fn normalize_frame_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut depth = 0usize;
-    for character in name.chars() {
-        match character {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(character),
-            _ => {}
-        }
-    }
-    let trimmed = out.trim_end();
-    if trimmed.is_empty() || depth != 0 {
-        name.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 pub(crate) struct RenderState<'a> {
     pub(crate) scope: u64,
     pub(crate) max_depth: usize,
@@ -262,21 +238,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalization_keeps_operators_and_strips_nested_templates() {
-        for (input, expected) in [
-            ("make<A<B>, C>", "make"),
-            ("make<T>::call<U>", "make::call"),
-            ("operator<<", "operator<<"),
-            ("<T>", "<T>"),
-            ("unclosed<T", "unclosed<T"),
-            ("plain", "plain"),
-        ] {
-            assert_eq!(normalize_frame_name(input), expected, "{input}");
-        }
-    }
-
-    #[test]
-    fn tree_budget_accepts_endpoints_and_rejects_nonfinite_percentages() {
+    fn validate_tree_budgets() {
         for (depth, nodes, percent) in [(0, 1, 0.0), (16, 512, 100.0)] {
             check_budget(depth, nodes, percent).unwrap();
         }
@@ -298,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn ranking_breaks_weight_ties_by_self_weight_then_name() {
+    fn rank_tied_frames() {
         use crate::profile::{BuildLimits, ProfileBuilder};
         let input = b"z 5\na 5\nb;leaf 5\n";
         let profile = ProfileBuilder::new(BuildLimits::default())

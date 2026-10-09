@@ -1,0 +1,29 @@
+[package]
+name = "prof-mcp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.88"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prof-mcp = { path = ".." }
+
+[[bin]]
+name = "folded"
+path = "fuzz_targets/folded.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "collapse"
+path = "fuzz_targets/collapse.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

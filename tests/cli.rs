@@ -3,7 +3,7 @@ use std::{fs, process::Command};
 use tempfile::tempdir;
 
 #[test]
-fn register_list_use_and_legacy_registration_are_compatible() {
+fn manage_aliases() {
     let workspace = tempdir().unwrap();
     let first = workspace.path().join("first.folded");
     let second = workspace.path().join("second.folded");
@@ -66,7 +66,7 @@ fn register_list_use_and_legacy_registration_are_compatible() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn capture_runs_perf_pipeline_and_registers_folded_output() {
+fn capture_and_register() {
     use std::os::unix::fs::PermissionsExt;
 
     let workspace = tempdir().unwrap();
@@ -99,15 +99,7 @@ exit 2
     fs::set_permissions(&perf, fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
         .current_dir(workspace.path())
-        .args([
-            "capture",
-            "--name",
-            "captured",
-            "--sample-period-us",
-            "100",
-            "--",
-            "/bin/true",
-        ])
+        .args(["capture", "--name", "captured", "--", "/bin/true"])
         .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
         .output()
         .unwrap();
@@ -122,7 +114,6 @@ exit 2
     )
     .unwrap();
     assert!(manifest["profiles"]["captured"].is_object());
-    assert_eq!(manifest["profiles"]["captured"]["sample_period_us"], 100);
     let fingerprint = manifest["profiles"]["captured"]["fingerprint"]
         .as_str()
         .unwrap();
@@ -133,11 +124,11 @@ exit 2
             .join(format!("{fingerprint}.folded")),
     )
     .unwrap();
-    assert_eq!(folded, "captured;caller;leaf 10\n");
+    assert_eq!(folded, "captured;caller [/bin/true];leaf [/bin/true] 10\n");
 }
 
 #[test]
-fn serve_requires_explicit_mcp_flag_and_version_is_available() {
+fn serve_flag_and_version() {
     let binary = env!("CARGO_BIN_EXE_prof-mcp");
     assert!(
         !Command::new(binary)
@@ -150,12 +141,12 @@ fn serve_requires_explicit_mcp_flag_and_version_is_available() {
     assert!(
         String::from_utf8(version.stdout)
             .unwrap()
-            .contains("prof-mcp 0.4.0")
+            .contains("prof-mcp 0.5.0")
     );
 }
 
 #[test]
-fn help_and_invalid_arguments_keep_plain_text_diagnostics() {
+fn plain_cli_diagnostics() {
     for args in [
         vec!["--help"],
         vec!["serve", "--help"],
@@ -184,7 +175,7 @@ fn help_and_invalid_arguments_keep_plain_text_diagnostics() {
 
 #[cfg(unix)]
 #[test]
-fn direct_invocation_idempotently_installs_codex_mcp_and_agents_guidance() {
+fn explicit_setup() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     let sandbox = tempdir().unwrap();
@@ -202,8 +193,11 @@ fn direct_invocation_idempotently_installs_codex_mcp_and_agents_guidance() {
     .unwrap();
     fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
 
+    let personal = codex_home.join("AGENTS.md");
+    fs::write(&personal, "# Personal guidance\n").unwrap();
     for _ in 0..2 {
         let output = Command::new(&prof)
+            .arg("setup")
             .env("CODEX_HOME", &codex_home)
             .env("PATH", &bin_dir)
             .output()
@@ -214,9 +208,10 @@ fn direct_invocation_idempotently_installs_codex_mcp_and_agents_guidance() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let agents = fs::read_to_string(codex_home.join("AGENTS.md")).unwrap();
-    assert_eq!(agents.matches("<!-- PROF_MCP_START -->").count(), 1);
-    assert!(agents.contains("Do not infer optimization targets from inclusive weight alone."));
+    assert_eq!(
+        fs::read_to_string(&personal).unwrap(),
+        "# Personal guidance\n"
+    );
     let calls = fs::read_to_string(codex_home.join("calls")).unwrap();
     assert!(calls.contains("mcp add prof-mcp -- prof-mcp serve --mcp"));
     assert_eq!(calls.lines().count(), 1);
@@ -224,7 +219,7 @@ fn direct_invocation_idempotently_installs_codex_mcp_and_agents_guidance() {
 
 #[cfg(unix)]
 #[test]
-fn setup_does_not_treat_codex_errors_as_a_missing_registration() {
+fn propagate_codex_errors() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     let sandbox = tempdir().unwrap();
@@ -255,7 +250,7 @@ fn setup_does_not_treat_codex_errors_as_a_missing_registration() {
 
 #[cfg(unix)]
 #[test]
-fn setup_rolls_back_legacy_mcp_before_leaving_agents_unchanged_on_add_failure() {
+fn restore_legacy_registration() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     let sandbox = tempdir().unwrap();
@@ -287,6 +282,7 @@ exit 3
     fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(&prof)
+        .arg("setup")
         .env("CODEX_HOME", &codex_home)
         .env("PATH", &bin_dir)
         .output()
@@ -302,91 +298,48 @@ exit 3
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn setup_rolls_back_registration_when_guidance_write_fails_and_can_retry() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
-
-    let sandbox = tempdir().unwrap();
-    let bin_dir = sandbox.path().join("bin");
-    let codex_home = sandbox.path().join("codex-home");
-    fs::create_dir_all(&bin_dir).unwrap();
-    fs::create_dir_all(&codex_home).unwrap();
-    let personal = sandbox.path().join("personal.md");
-    fs::write(&personal, "# Keep personal guidance\n").unwrap();
-    let agents = codex_home.join("AGENTS.md");
-    symlink(&personal, &agents).unwrap();
-    let prof = bin_dir.join("prof-mcp");
-    symlink(env!("CARGO_BIN_EXE_prof-mcp"), &prof).unwrap();
-    let codex = bin_dir.join("codex");
-    fs::write(&codex, r#"#!/bin/sh
-if [ "$1 $2 $3" = "mcp list --json" ]; then
-  if [ -f "$CODEX_HOME/state" ]; then
-    printf '[{"name":"prof-mcp","enabled":true,"transport":{"type":"stdio","command":"prof-mcp","args":["serve","--mcp"]}}]\n'
-  else printf '[]\n'; fi
-  exit 0
-fi
-if [ "$1 $2 $3" = "mcp add prof-mcp" ]; then : > "$CODEX_HOME/state"; exit 0; fi
-if [ "$1 $2 $3" = "mcp remove prof-mcp" ]; then /bin/rm -f "$CODEX_HOME/state"; exit 0; fi
-exit 3
-"#).unwrap();
-    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
-    let run = || {
-        Command::new(&prof)
-            .arg("setup")
-            .env("CODEX_HOME", &codex_home)
-            .env("PATH", &bin_dir)
-            .output()
-            .unwrap()
-    };
-    let failed = run();
-    assert!(!failed.status.success());
-    assert!(
-        String::from_utf8_lossy(&failed.stderr).contains("Refusing to replace symlinked AGENTS.md")
-    );
-    assert!(
-        !codex_home.join("state").exists(),
-        "new MCP registration was rolled back"
-    );
-    assert_eq!(
-        fs::read_to_string(&personal).unwrap(),
-        "# Keep personal guidance\n"
-    );
-    assert!(
-        fs::symlink_metadata(&agents)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-
-    fs::remove_file(&agents).unwrap();
-    fs::write(&agents, fs::read(&personal).unwrap()).unwrap();
-    let retried = run();
-    assert!(
-        retried.status.success(),
-        "{}",
-        String::from_utf8_lossy(&retried.stderr)
-    );
-    assert!(codex_home.join("state").exists());
-    let guidance = fs::read_to_string(&agents).unwrap();
-    assert!(guidance.starts_with("# Keep personal guidance\n"));
-    assert_eq!(guidance.matches("<!-- PROF_MCP_START -->").count(), 1);
+fn no_arguments_show_help() {
+    let workspace = tempdir().unwrap();
+    let home = workspace.path().join("codex-home");
+    let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(workspace.path())
+        .env("CODEX_HOME", &home)
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+    assert!(!home.exists());
+    assert!(!workspace.path().join(".prof-mcp").exists());
 }
 
 #[test]
-fn sampling_period_help_describes_metadata_without_claiming_time_conversion() {
-    for args in [
-        vec!["--help"],
-        vec!["register", "--help"],
-        vec!["capture", "--help"],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let help = String::from_utf8(output.stdout).unwrap();
-        assert!(help.contains("User-declared"));
-        assert!(!help.contains("estimated"));
-    }
+fn register_stdin() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let root = tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(root.path())
+        .args(["register", "-", "--name", "base"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"root;leaf 7\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resolved = prof_mcp::registry::resolve(root.path(), None).unwrap();
+    assert_eq!(resolved.alias, "base");
+    assert_eq!(fs::read(resolved.path).unwrap(), b"root;leaf 7\n");
 }

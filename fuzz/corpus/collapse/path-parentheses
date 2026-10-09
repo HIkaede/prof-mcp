@@ -1,0 +1,5 @@
+worker 12 1.0: 1 cycles:
+  7 foo (/tmp/lib(foo.so)
+
+worker 12 2.0: 1 cycles:
+  7 foo (/tmp/lib (foo.so)

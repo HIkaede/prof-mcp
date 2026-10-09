@@ -14,7 +14,7 @@ fn parse(input: &[u8]) -> Result<prof_mcp::profile::Profile, prof_mcp::error::Pr
 }
 
 #[test]
-fn accepts_spaces_crlf_empty_lines_trailing_ascii_whitespace_and_aggregates() {
+fn parse_folded_whitespace() {
     let profile = parse(b"\r\nroot;frame with spaces 3 \t\r\nroot;frame with spaces 7\n").unwrap();
     assert_eq!(profile.total_weight, 10);
     assert_eq!(profile.stacks.len(), 1);
@@ -25,7 +25,7 @@ fn accepts_spaces_crlf_empty_lines_trailing_ascii_whitespace_and_aggregates() {
 }
 
 #[test]
-fn final_contiguous_delimiter_is_not_part_of_a_frame() {
+fn trim_weight_delimiter() {
     let profile = parse(b"root;A  \t37\n").unwrap();
     assert_eq!(profile.frame_id("A"), Some(1));
     let error = parse(b"root;   1\n").unwrap_err();
@@ -36,7 +36,7 @@ fn final_contiguous_delimiter_is_not_part_of_a_frame() {
 }
 
 #[test]
-fn parser_error_matrix_has_recoverable_codes_and_preview() {
+fn parser_errors_and_previews() {
     for (input, code) in [
         (b"root;A\n".as_slice(), "invalid_folded_line"),
         (b"root;A nope\n", "invalid_weight"),
@@ -53,7 +53,7 @@ fn parser_error_matrix_has_recoverable_codes_and_preview() {
 }
 
 #[test]
-fn limits_and_fingerprint_are_enforced_and_stable() {
+fn parser_limits_and_fingerprint() {
     let depth_error = ProfileBuilder::new(BuildLimits {
         max_depth: 2,
         ..BuildLimits::default()
@@ -105,7 +105,7 @@ fn limits_and_fingerprint_are_enforced_and_stable() {
 }
 
 #[test]
-fn utf8_final_frames_keep_complete_names_across_ascii_delimiters() {
+fn parse_unicode_frames() {
     for (name, delimiter) in [
         ("函数", " "),
         ("🙂", "\t"),

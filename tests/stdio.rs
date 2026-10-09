@@ -122,7 +122,7 @@ impl Drop for StdioServer {
 }
 
 #[test]
-fn binary_stdio_handshake_tools_dynamic_registration_and_clean_stdout() {
+fn stdio_protocol() {
     #[cfg(target_os = "linux")]
     let workspace = tempfile::tempdir_in("/dev/shm").unwrap();
     #[cfg(not(target_os = "linux"))]
@@ -171,7 +171,7 @@ fn binary_stdio_handshake_tools_dynamic_registration_and_clean_stdout() {
 
     let source = workspace.path().join("sample.folded");
     fs::write(&source, "root;函数 3\n").unwrap();
-    registry::register(workspace.path(), &source, Some("sample"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("sample"), 1024).unwrap();
     let available = server.request(
         4,
         "tools/call",

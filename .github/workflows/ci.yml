@@ -15,6 +15,7 @@ jobs:
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo +stable test --locked --all-targets --all-features
+      - run: python3 eval/test_query.py
       - run: cargo +stable test --locked --release --test stdio
 
   msrv:
@@ -23,3 +24,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
       - run: cargo +1.88.0 test --locked --all-targets --all-features
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUSTFLAGS: >-
+        -Cpasses=sancov-module
+        -Cllvm-args=-sanitizer-coverage-level=4
+        -Cllvm-args=-sanitizer-coverage-inline-8bit-counters
+        -Cllvm-args=-sanitizer-coverage-pc-table
+        -Cllvm-args=-sanitizer-coverage-trace-compares
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable build --locked --manifest-path fuzz/Cargo.toml --target x86_64-unknown-linux-gnu
+      - run: |
+          cp -r fuzz/corpus/folded /tmp/prof-fuzz-folded
+          cp -r fuzz/corpus/collapse /tmp/prof-fuzz-collapse
+          fuzz/target/x86_64-unknown-linux-gnu/debug/folded /tmp/prof-fuzz-folded -runs=20000 -max_total_time=30 -max_len=65537 -timeout=3 -rss_limit_mb=512
+          fuzz/target/x86_64-unknown-linux-gnu/debug/collapse /tmp/prof-fuzz-collapse -runs=20000 -max_total_time=30 -max_len=65537 -timeout=3 -rss_limit_mb=512
+      - run: python3 eval/score.py --self-check

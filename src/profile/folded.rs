@@ -81,7 +81,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn line_parser_preserves_spaces_and_checks_depth_at_the_boundary() {
+    fn parse_spaces_and_depth() {
         assert_eq!(
             parse_line(7, b"root;with spaces  \t37\r\n", 2).unwrap(),
             Some((vec!["root", "with spaces"], 37))
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_returns_a_safe_preview_and_line_number() {
+    fn reject_invalid_utf8() {
         let error = parse_line(9, b"root;\xff\x1b 1\n", 2).unwrap_err();
         assert_eq!(error.code, "invalid_folded_line");
         assert_eq!(error.details["line"], 9);

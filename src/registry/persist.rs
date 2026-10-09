@@ -62,7 +62,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failed_rename_preserves_destination_cleans_temp_and_allows_retry() {
+    fn recover_failed_rename() {
         for write in [atomic_write_bytes, atomic_replace] {
             let root = tempfile::tempdir().unwrap();
             let destination = root.path().join("blocked");

@@ -59,8 +59,6 @@ exit 2
                 "capture",
                 "--name",
                 "candidate",
-                "--sample-period-us",
-                "100",
                 "--",
             ])
             .args(command)
@@ -110,7 +108,7 @@ exit 2
 const VALID: &str = "worker 12 1.0: 2 cycles:\n  7 overload(int)+0x4 (/tmp/a)\n\nworker 12 2.0: 3 cycles:\n  7 overload(double) (/tmp/a)\n";
 
 #[test]
-fn capture_passes_exact_argv_and_keeps_overload_identities() {
+fn capture_argv_and_overloads() {
     let capture = Capture::new(VALID);
     let command = [
         "target with spaces",
@@ -136,15 +134,14 @@ fn capture_passes_exact_argv_and_keeps_overload_identities() {
     );
     assert!(!capture.root.path().join("injected").exists());
     let profile = registry::resolve(capture.root.path(), Some("candidate")).unwrap();
-    assert_eq!(profile.sample_period_us, Some(100));
     assert_eq!(
         fs::read_to_string(profile.path).unwrap(),
-        "worker;overload(double) 3\nworker;overload(int) 2\n"
+        "worker;overload(double) [/tmp/a] 3\nworker;overload(int) [/tmp/a] 2\n"
     );
 }
 
 #[test]
-fn capture_failures_preserve_alias_manifest_and_blobs() {
+fn preserve_registry_on_failure() {
     let huge = format!("{}\n", "x".repeat(1024 * 1024 + 1));
     let deep = format!(
         "worker 12 1.0: 1 cycles:\n{}\n",
@@ -165,13 +162,18 @@ fn capture_failures_preserve_alias_manifest_and_blobs() {
             "worker 12 1.0: 18446744073709551615 cycles:\n  7 leaf (/tmp/a)\n",
             "weight",
         ),
+        (
+            "success",
+            "worker 12 1.0: 1 cycles:\n  7 leaf (/tmp/a)\n\nworker 12 2.0: 1 instructions:\n  7 leaf (/tmp/a)\n",
+            "multiple event types",
+        ),
         ("success", &huge, "byte limit"),
         ("success", &deep, "depth"),
     ] {
         let capture = Capture::new(input);
         let source = capture.root.path().join("base.folded");
         fs::write(&source, "root;base 1\n").unwrap();
-        registry::register(capture.root.path(), &source, Some("candidate"), 1024, None).unwrap();
+        registry::register(capture.root.path(), &source, Some("candidate"), 1024).unwrap();
         let manifest = capture.root.path().join(".prof-mcp/manifest.json");
         let before = fs::read(&manifest).unwrap();
         let output = capture.run(mode, &["/bin/true"]);
@@ -197,7 +199,7 @@ fn capture_failures_preserve_alias_manifest_and_blobs() {
 }
 
 #[test]
-fn malformed_stream_kills_and_reaps_perf_without_publishing_registry() {
+fn reap_perf_on_parse_error() {
     let capture = Capture::new("");
     let output = capture.run("waiting", &["/bin/true"]);
     assert!(!output.status.success());

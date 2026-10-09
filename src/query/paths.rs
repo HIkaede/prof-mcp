@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_clamp_to_stack_and_span_recursive_occurrences() {
+    fn clamp_recursive_windows() {
         for (window, expected) in [
             (None, (0, 6)),
             (Some(FrameWindow::Head { lines: 2 }), (0, 2)),
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_budget_keeps_requested_direction_or_centers_on_target() {
+    fn crop_to_frame_budget() {
         for (window, expected) in [
             (Some(FrameWindow::Head { lines: 8 }), (1, 4)),
             (Some(FrameWindow::Tail { lines: 8 }), (6, 9)),

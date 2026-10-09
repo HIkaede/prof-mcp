@@ -33,22 +33,11 @@ impl ProfileServer {
             .and_then(|loaded| {
                 let status = registry::status(self.cache.workspace())?;
                 Ok(tag_registry(
-                    tag_alias(
-                        query::summary(&loaded.profile),
-                        &loaded.alias,
-                        loaded.sample_period_us,
-                    ),
+                    tag_alias(query::summary(&loaded.profile), &loaded.alias),
                     status,
                 ))
             }) {
-            Ok(value) => success(
-                value,
-                "Next use profile_find_symbols, then focused callers/callees/paths.",
-                &[
-                    "Resolve an exact frame with profile_find_symbols.",
-                    "Expand the dominant region with profile_tree {root_node_id:0}.",
-                ],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -66,15 +55,10 @@ impl ProfileServer {
                     &input.query,
                     parse_match(&input.mode)?,
                     input.limit,
-                    input.normalize,
                 )
-                .map(|value| tag_alias(value, &loaded.alias, loaded.sample_period_us))
+                .map(|value| tag_alias(value, &loaded.alias))
             }) {
-            Ok(value) => success(
-                value,
-                "Symbol matches returned; use a frame_id in a focused query.",
-                &["Pass a returned frame_id or exact frame_name to callers/callees/paths/top."],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -94,24 +78,10 @@ impl ProfileServer {
                     input.limit,
                     focus.as_ref(),
                     input.name_regex.as_deref(),
-                    input.normalize,
                 )
-                .and_then(|value| {
-                    typed_output::<TopOutput>(tag_alias(
-                        value,
-                        &loaded.alias,
-                        loaded.sample_period_us,
-                    ))
-                })
+                .and_then(|value| typed_output::<TopOutput>(tag_alias(value, &loaded.alias)))
             }) {
-            Ok(value) => success(
-                value,
-                "Ranked frames returned; use profile_tree, callers, or callees for context.",
-                &[
-                    "Trace one row with profile_callers or profile_callees.",
-                    "Inspect whole stacks with profile_paths through that frame.",
-                ],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -132,19 +102,9 @@ impl ProfileServer {
                     input.max_nodes,
                     input.min_scope_percent,
                 )
-                .and_then(|value| {
-                    typed_output::<TreeOutput>(tag_alias(
-                        value,
-                        &loaded.alias,
-                        loaded.sample_period_us,
-                    ))
-                })
+                .and_then(|value| typed_output::<TreeOutput>(tag_alias(value, &loaded.alias)))
             }) {
-            Ok(value) => success(
-                value,
-                "Tree page returned; pass its fingerprint for any non-root continuation.",
-                &["Continue an omitted child via continuations node_id plus profile_fingerprint."],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -169,21 +129,9 @@ impl ProfileServer {
                         .as_ref()
                         .map(|c| (c.node_path.as_slice(), c.profile_fingerprint.as_str())),
                 )
-                .and_then(|value| {
-                    typed_output::<DirectionOutput>(tag_alias(
-                        value,
-                        &loaded.alias,
-                        loaded.sample_period_us,
-                    ))
-                })
+                .and_then(|value| typed_output::<DirectionOutput>(tag_alias(value, &loaded.alias)))
             }) {
-            Ok(value) => success(
-                value,
-                "Caller tree returned; use profile_paths for complete contributing stacks.",
-                &[
-                    "Raise max_depth/max_nodes to deepen; continue omitted nodes via continuations node_path.",
-                ],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -208,21 +156,9 @@ impl ProfileServer {
                         .as_ref()
                         .map(|c| (c.node_path.as_slice(), c.profile_fingerprint.as_str())),
                 )
-                .and_then(|value| {
-                    typed_output::<DirectionOutput>(tag_alias(
-                        value,
-                        &loaded.alias,
-                        loaded.sample_period_us,
-                    ))
-                })
+                .and_then(|value| typed_output::<DirectionOutput>(tag_alias(value, &loaded.alias)))
             }) {
-            Ok(value) => success(
-                value,
-                "Callee tree returned; use profile_paths for complete contributing stacks.",
-                &[
-                    "Raise max_depth/max_nodes to deepen; continue omitted nodes via continuations node_path.",
-                ],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -244,19 +180,9 @@ impl ProfileServer {
                     frame_window,
                     input.max_total_frames,
                 )
-                .and_then(|value| {
-                    typed_output::<PathsOutput>(tag_alias(
-                        value,
-                        &loaded.alias,
-                        loaded.sample_period_us,
-                    ))
-                })
+                .and_then(|value| typed_output::<PathsOutput>(tag_alias(value, &loaded.alias)))
             }) {
-            Ok(value) => success(
-                value,
-                "Heavy paths returned; inspect target_positions for recursive occurrences.",
-                &["Use frame_window around_target to focus context around the target frame."],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }
@@ -280,21 +206,13 @@ impl ProfileServer {
                 typed_output::<DiffOutput>(tag_diff_aliases(
                     value,
                     &baseline.alias,
-                    baseline.sample_period_us,
                     &candidate.alias,
-                    candidate.sample_period_us,
                 ))
             })
         }
         .await
         {
-            Ok(value) => success(
-                value,
-                "Profile diff returned; percentage-point changes are not causal evidence.",
-                &[
-                    "Re-run with sort=absolute to surface symmetric changes missed by regression order.",
-                ],
-            ),
+            Ok(value) => success(value),
             Err(error) => failure(error),
         }
     }

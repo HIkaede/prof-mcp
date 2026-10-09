@@ -1,0 +1,6 @@
+root;dispatch;parse 20
+root;dispatch;compute<int> 30
+root;dispatch;compute<double> 20
+root;io;read 30
+root;recursive;recursive;leaf 15
+root;wrapper;leaf 5

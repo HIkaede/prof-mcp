@@ -29,8 +29,6 @@ pub struct ManifestProfile {
     pub source_name: String,
     pub byte_len: u64,
     pub registered_unix_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sample_period_us: Option<u64>,
 }
 
 pub(crate) fn read_manifest_optional(state: &Path) -> Result<Option<Manifest>, ApiError> {

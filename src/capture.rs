@@ -15,19 +15,15 @@ use crate::{config::Config, profile::BuildLimits, registry};
 pub fn run(
     config: &Config,
     name: Option<&str>,
-    sample_period_us: Option<u64>,
     command: &[OsString],
 ) -> Result<registry::Registration> {
-    if sample_period_us == Some(0) {
-        bail!("--sample-period-us must be a positive integer");
-    }
     if command.is_empty() {
         bail!("capture requires a command after --");
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (config, name, sample_period_us, command);
+        let _ = (config, name, command);
         bail!("capture is only supported on Linux");
     }
 
@@ -84,7 +80,6 @@ pub fn run(
             &folded,
             name,
             config.max_file_size_bytes(),
-            sample_period_us,
         )
         .map_err(anyhow::Error::msg)
     }
@@ -102,7 +97,7 @@ impl Drop for PerfScript {
     }
 }
 
-fn collapse_perf_script<R: BufRead, W: Write>(
+pub fn collapse_perf_script<R: BufRead, W: Write>(
     mut reader: R,
     writer: &mut W,
     limits: BuildLimits,
@@ -112,7 +107,6 @@ fn collapse_perf_script<R: BufRead, W: Write>(
     let mut period = 1_u64;
     let mut stack = Vec::<String>::new();
     let mut event_filter = None;
-    let mut skip_event = false;
     let mut input_bytes = 0_u64;
     let mut total_weight = 0_u64;
     let mut sample_bytes = 0_usize;
@@ -169,23 +163,20 @@ fn collapse_perf_script<R: BufRead, W: Write>(
                 &mut total_weight,
                 limits,
             )?;
-            skip_event = event_filter
+            if event_filter
                 .as_deref()
-                .is_some_and(|selected| selected != event);
-            if skip_event {
-                continue;
+                .is_some_and(|selected| selected != event)
+            {
+                bail!("perf script contains multiple event types at line {line_no}");
             }
             if sample_period == 0 {
                 bail!("perf sample weight must be positive");
             }
             event_filter = Some(event);
-            let name = encode_frame(&name.replace(' ', "_"));
+            let name = encode_frame(&name);
             sample_bytes = name.len();
             process = Some(name);
             period = sample_period;
-            continue;
-        }
-        if skip_event && line.starts_with(char::is_whitespace) {
             continue;
         }
         if process.is_some()
@@ -307,15 +298,37 @@ fn is_pid_field(field: &str) -> bool {
 // Percent escaping keeps folded separators unambiguous without conflating
 // a literal colon or percent sequence with the original symbol identity.
 fn encode_frame(frame: &str) -> String {
-    frame.replace('%', "%25").replace(';', "%3B")
+    frame
+        .replace('%', "%25")
+        .replace(';', "%3B")
+        .replace('[', "%5B")
+        .replace(']', "%5D")
 }
 
 fn parse_stack_line(line: &str) -> Option<String> {
     let line = line.trim_start();
-    let module_start = line.rfind(" (")?;
     if !line.ends_with(')') {
         return None;
     }
+    // Paths may contain literal parentheses; prefer the path or bracketed DSO field.
+    let module_start = line.rfind(" (/").max(line.rfind(" ([")).or_else(|| {
+        let mut nesting = 0_usize;
+        line.char_indices()
+            .rev()
+            .find_map(|(index, ch)| {
+                if ch == ')' {
+                    nesting += 1;
+                } else if ch == '(' {
+                    nesting -= 1;
+                    if nesting == 0 {
+                        return Some(index);
+                    }
+                }
+                None
+            })
+            .and_then(|index| index.checked_sub(1))
+            .filter(|start| line.as_bytes()[*start] == b' ')
+    })?;
     let frame = &line[..module_start];
     let module = &line[module_start + 2..line.len() - 1];
     let (pc, raw) = frame.split_once(char::is_whitespace)?;
@@ -330,13 +343,16 @@ fn parse_stack_line(line: &str) -> Option<String> {
     {
         function = symbol.to_owned();
     }
-    if function == "[unknown]" && module != "[unknown]" {
-        function = format!("[{}]", module.rsplit('/').next().unwrap_or(module));
-    }
-    if function.is_empty() {
+    if function.is_empty() || module.is_empty() {
         return None;
     }
-    Some(encode_frame(&function))
+    // Literal brackets are escaped, so this reserved marker cannot be a symbol name.
+    let function = if function == "[unknown]" {
+        format!("[unknown@0x{pc}]")
+    } else {
+        encode_frame(&function)
+    };
+    Some(format!("{function} [{}]", encode_frame(module)))
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ use serde_json::json;
 
 use crate::error::ApiError;
 use crate::profile::{BuildLimits, ProfileBuilder};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use errors::{
     corrupt, invalid_alias, path_text, profile_too_large, registry_io, serialize_path, source_error,
@@ -33,7 +33,7 @@ use layout::{
 use lock::{RegistrationLock, unix_ms};
 use manifest::{
     atomic_write_json, read_manifest_optional, read_manifest_required, safe_profile_path,
-    validate_manifest,
+    valid_source_name, validate_manifest,
 };
 use persist::atomic_write_bytes;
 
@@ -42,7 +42,6 @@ pub struct Registration {
     pub alias: String,
     pub fingerprint: String,
     pub byte_len: u64,
-    pub sample_period_us: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,7 +50,6 @@ pub struct ResolvedProfile {
     pub fingerprint: String,
     pub path: PathBuf,
     pub byte_len: u64,
-    pub sample_period_us: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,8 +67,6 @@ pub struct RegistryProfile {
     pub source_name: String,
     pub byte_len: u64,
     pub registered_unix_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample_period_us: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,27 +106,12 @@ pub fn register(
     source: &Path,
     explicit_alias: Option<&str>,
     max_file_size: u64,
-    sample_period_us: Option<u64>,
 ) -> Result<Registration, ApiError> {
-    if sample_period_us == Some(0) {
-        return Err(ApiError::new(
-            "invalid_sample_period",
-            "sample period must be a positive integer of microseconds",
-            json!({"sample_period_us":0}),
-            "Pass --sample-period-us with a positive integer.",
-        ));
-    }
-    let alias = explicit_alias
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| default_alias(source));
-    if !valid_alias(&alias) {
-        return Err(invalid_alias(&alias));
-    }
-    let metadata = fs::metadata(source).map_err(|error| source_error(source, error))?;
+    let metadata = fs::symlink_metadata(source).map_err(|error| source_error(source, error))?;
     if !metadata.file_type().is_file() {
         return Err(ApiError::new(
             "not_a_regular_file",
-            format!("Profile is not a regular file: {}", source.display()),
+            "Profile must be a regular file",
             json!({"profile":path_text(source)}),
             "Select a regular folded stack file.",
         ));
@@ -138,36 +119,59 @@ pub fn register(
     if metadata.len() > max_file_size {
         return Err(profile_too_large(metadata.len(), max_file_size));
     }
-    let bytes = fs::read(source).map_err(|error| source_error(source, error))?;
+    let file = fs::File::open(source).map_err(|error| source_error(source, error))?;
+    let source_name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| ApiError::internal("Profile path has no file name"))?;
+    let alias = explicit_alias
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| default_alias(source));
+    register_reader(workspace, file, &source_name, Some(&alias), max_file_size)
+}
+
+pub fn register_reader(
+    workspace: &Path,
+    reader: impl Read,
+    source_name: &str,
+    explicit_alias: Option<&str>,
+    max_file_size: u64,
+) -> Result<Registration, ApiError> {
+    let alias = explicit_alias
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| default_alias(Path::new(source_name)));
+    if !valid_alias(&alias) {
+        return Err(invalid_alias(&alias));
+    }
+    if !valid_source_name(source_name) {
+        return Err(ApiError::new(
+            "invalid_source_name",
+            "Profile source must be a file name",
+            json!({"source_name":source_name}),
+            "Use a single file name.",
+        ));
+    }
+    let mut bytes = Vec::new();
+    reader
+        .take(max_file_size.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| source_error(Path::new(source_name), error))?;
     if bytes.len() as u64 > max_file_size {
         return Err(profile_too_large(bytes.len() as u64, max_file_size));
     }
-    let canonical_source = fs::canonicalize(source).map_err(|error| source_error(source, error))?;
     let parsed = ProfileBuilder::new(BuildLimits {
         max_file_bytes: max_file_size,
         ..BuildLimits::default()
     })
     .from_reader(
         Cursor::new(&bytes),
-        canonical_source,
+        PathBuf::from(source_name),
         bytes.len() as u64,
         None,
     )
     .map_err(ApiError::from)?;
     let fingerprint = parsed.source.fingerprint;
-    let source_name = source
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| {
-            ApiError::new(
-                "not_a_regular_file",
-                "Profile path does not have a file name",
-                json!({"profile":path_text(source)}),
-                "Select a folded profile file rather than a directory.",
-            )
-        })?
-        .to_owned();
+    let source_name = source_name.to_owned();
 
     let state = workspace.join(REGISTRY_DIR);
     ensure_registry_layout(&state)?;
@@ -194,7 +198,6 @@ pub fn register(
             source_name,
             byte_len: bytes.len() as u64,
             registered_unix_ms: unix_ms(),
-            sample_period_us,
         },
     );
     validate_manifest(&manifest)?;
@@ -230,7 +233,6 @@ pub fn register(
     Ok(Registration {
         alias,
         fingerprint,
-        sample_period_us,
         byte_len: bytes.len() as u64,
     })
 }
@@ -313,7 +315,6 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
         fingerprint: entry.fingerprint.clone(),
         path,
         byte_len: entry.byte_len,
-        sample_period_us: entry.sample_period_us,
     })
 }
 
@@ -337,7 +338,6 @@ pub fn status(workspace: &Path) -> Result<RegistryStatus, ApiError> {
             source_name: profile.source_name.clone(),
             byte_len: profile.byte_len,
             registered_unix_ms: profile.registered_unix_ms,
-            sample_period_us: profile.sample_period_us,
         })
         .collect();
     Ok(RegistryStatus {

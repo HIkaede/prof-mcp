@@ -12,16 +12,11 @@ use crate::error::ApiError;
 pub(crate) struct WeightSemantics {
     unit: String,
     basis: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sample_period_us: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) struct OutputProfile {
-    canonical_path: String,
     fingerprint: String,
-    byte_len: u64,
-    modified_unix_ms: Option<u64>,
     alias: String,
     weight_semantics: WeightSemantics,
 }
@@ -42,8 +37,6 @@ pub(crate) struct OutputEnvelope<T> {
     truncated: bool,
     truncation_reasons: Vec<TruncationReason>,
     warnings: Vec<String>,
-    #[serde(default)]
-    next_steps: Vec<String>,
     data: T,
 }
 
@@ -52,21 +45,8 @@ pub(crate) struct TopData {
     sort: String,
     focus: Option<u32>,
     rows: Vec<crate::output::FrameRow>,
-    #[serde(default)]
-    grouped_rows: Vec<GroupedFrameRow>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub(crate) struct GroupedFrameRow {
-    normalized_name: String,
-    member_count: usize,
-    members: Vec<String>,
-    self_weight: u64,
-    inclusive_weight: u64,
-    stack_count_sum: u32,
-    profile_percent: f64,
-    scope_percent: f64,
-}
 pub(crate) type TopOutput = OutputEnvelope<TopData>;
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -194,8 +174,6 @@ pub(crate) struct DiffRow {
 pub(crate) struct DiffData {
     metric: String,
     sort: String,
-    #[serde(default)]
-    total_weight_ratio: f64,
     rows: Vec<DiffRow>,
 }
 
@@ -214,8 +192,6 @@ pub(crate) struct DiffOutput {
     truncated: bool,
     truncation_reasons: Vec<TruncationReason>,
     warnings: Vec<String>,
-    #[serde(default)]
-    next_steps: Vec<String>,
     data: DiffData,
 }
 
@@ -225,8 +201,8 @@ pub(crate) fn output_schema(
 ) -> Arc<serde_json::Map<String, Value>> {
     let profile = serde_json::json!({
         "type":"object",
-        "properties":{"canonical_path":{"type":"string"},"fingerprint":{"type":"string"},"byte_len":{"type":"integer"},"modified_unix_ms":{"type":["integer","null"]},"alias":{"type":"string"},"weight_semantics":{"type":"object","properties":{"unit":{"type":"string","const":"opaque"},"basis":{"type":"string","const":"folded_input"},"sample_period_us":{"type":"integer","minimum":1}},"required":["unit","basis"]}},
-        "required":["canonical_path","fingerprint","byte_len","modified_unix_ms","alias","weight_semantics"]
+        "properties":{"fingerprint":{"type":"string"},"alias":{"type":"string"},"weight_semantics":{"type":"object","properties":{"unit":{"type":"string","const":"opaque"},"basis":{"type":"string","const":"folded_input"}},"required":["unit","basis"]}},
+        "required":["fingerprint","alias","weight_semantics"]
     });
     let properties = serde_json::json!({
         "schema_version":{"type":"string","const":"2"},

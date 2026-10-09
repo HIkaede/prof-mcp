@@ -79,11 +79,67 @@ struct DiffRow {
 #[derive(Deserialize)]
 struct DiffData {
     rows: Vec<DiffRow>,
-    total_weight_ratio: f64,
 }
 
 #[tokio::test]
-async fn summary_has_registry_metadata_and_text_fallback() {
+async fn responses_have_no_next_steps() {
+    sample(async |client| {
+        for (name, arguments) in [
+            ("profile_summary", serde_json::json!({})),
+            ("profile_find_symbols", serde_json::json!({"query":"A"})),
+            ("profile_top", serde_json::json!({})),
+            ("profile_tree", serde_json::json!({"max_nodes":1})),
+            (
+                "profile_callers",
+                serde_json::json!({"frame":{"frame_name":"A"},"max_nodes":1}),
+            ),
+            (
+                "profile_callees",
+                serde_json::json!({"frame":{"frame_name":"A"},"max_nodes":1}),
+            ),
+            (
+                "profile_paths",
+                serde_json::json!({"through":{"frame_name":"A"}}),
+            ),
+            (
+                "profile_diff",
+                serde_json::json!({"baseline":"sample","candidate":"sample"}),
+            ),
+        ] {
+            let response = client
+                .call_tool(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.is_error, Some(false), "{name}");
+            let value = response.structured_content.as_ref().unwrap();
+            assert!(value.get("next_steps").is_none(), "{name}");
+            assert_eq!(value["schema_version"], "2");
+            let text = &response.content[0].as_text().unwrap().text;
+            assert!(
+                text.starts_with("profile=sample; truncated="),
+                "{name}: {text}"
+            );
+            assert!(text.contains("; reasons=["), "{name}: {text}");
+            assert!(!text.contains("profile_"), "{name}: {text}");
+            if name == "profile_tree" {
+                assert_eq!(value["truncated"], true);
+                assert!(
+                    !value["data"]["continuations"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn summary_metadata_and_text() {
     sample(async |client| {
         let result = client
             .call_tool(
@@ -123,7 +179,7 @@ async fn summary_has_registry_metadata_and_text_fallback() {
 }
 
 #[tokio::test]
-async fn successful_responses_deserialize_into_independent_client_types() {
+async fn deserialize_tool_responses() {
     sample(async |client| {
         for (name, arguments) in [
             (
@@ -158,6 +214,7 @@ async fn successful_responses_deserialize_into_independent_client_types() {
                 .expect("{name} structured content");
             match name {
                 "profile_top" => {
+                    assert!(structured["data"].get("grouped_rows").is_none());
                     let typed: TypedEnvelope<TopData> = serde_json::from_value(structured).unwrap();
                     assert_eq!(typed.schema_version, "2");
                     assert!(!typed.data.rows.is_empty());
@@ -180,9 +237,16 @@ async fn successful_responses_deserialize_into_independent_client_types() {
                         serde_json::from_value(structured).unwrap();
                     assert!(!typed.data.rows.is_empty());
                     assert_eq!(typed.data.rows[0].delta_pp, 0.0);
-                    assert_eq!(typed.data.total_weight_ratio, 1.0);
                 }
-                "profile_find_symbols" => {}
+                "profile_find_symbols" => {
+                    let matches = structured["data"]["matches"].as_array().unwrap();
+                    assert_eq!(matches.len(), 1);
+                    assert_eq!(matches[0]["name"], "A");
+                    assert_eq!(matches[0]["self_weight"], 3);
+                    assert_eq!(matches[0]["inclusive_weight"], 5);
+                    assert_eq!(matches[0]["stack_count"], 2);
+                    assert!(matches[0].get("context_hint").is_none());
+                }
                 _ => unreachable!("unexpected tool in typed output loop"),
             }
         }
@@ -191,7 +255,7 @@ async fn successful_responses_deserialize_into_independent_client_types() {
 }
 
 #[tokio::test]
-async fn path_truncation_preserves_positions_and_reports_reasons() {
+async fn truncated_path_positions() {
     sample(async |client| {
         let truncated = client
         .call_tool(
@@ -264,8 +328,25 @@ async fn path_truncation_preserves_positions_and_reports_reasons() {
 }
 
 #[tokio::test]
-async fn business_and_protocol_errors_remain_distinct() {
+async fn business_and_protocol_errors() {
     sample(async |client| {
+        for name in ["profile_top", "profile_find_symbols"] {
+            let arguments = if name == "profile_top" {
+                serde_json::json!({"normalize":true})
+            } else {
+                serde_json::json!({"query":"A","normalize":true})
+            };
+            assert!(
+                client
+                    .call_tool(
+                        CallToolRequestParams::new(name)
+                            .with_arguments(arguments.as_object().unwrap().clone()),
+                    )
+                    .await
+                    .is_err(),
+                "{name}"
+            );
+        }
         let error = client
             .call_tool(
                 CallToolRequestParams::new("profile_summary").with_arguments(
@@ -347,7 +428,7 @@ async fn business_and_protocol_errors_remain_distinct() {
 }
 
 #[tokio::test]
-async fn diff_conversion_keeps_ratio_and_raw_weights_for_different_totals() {
+async fn diff_raw_weights() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("diff.folded");
     for (alias, content) in [
@@ -355,7 +436,7 @@ async fn diff_conversion_keeps_ratio_and_raw_weights_for_different_totals() {
         ("candidate", "root;hot 250\n"),
     ] {
         fs::write(&source, content).unwrap();
-        registry::register(workspace.path(), &source, Some(alias), 1024, None).unwrap();
+        registry::register(workspace.path(), &source, Some(alias), 1024).unwrap();
     }
     check(workspace.path(), true, async |client| {
         let response = client
@@ -375,7 +456,6 @@ async fn diff_conversion_keeps_ratio_and_raw_weights_for_different_totals() {
         assert_eq!(typed.schema_version, "2");
         assert!(!typed.truncated);
         assert!(typed.truncation_reasons.is_empty());
-        assert_eq!(typed.data.total_weight_ratio, 2.5);
         let hot = typed
             .data
             .rows
@@ -389,71 +469,54 @@ async fn diff_conversion_keeps_ratio_and_raw_weights_for_different_totals() {
 }
 
 #[tokio::test]
-async fn weight_semantics_are_opaque_and_period_metadata_survives_every_tool() {
-    let workspace = tempdir().unwrap();
-    let source = workspace.path().join("metadata.folded");
-    for (alias, period) in [
-        ("plain", None),
-        ("declared", Some(100)),
-        ("other", Some(200)),
-    ] {
-        fs::write(&source, "root;A 3\nroot;A;B 2\n").unwrap();
-        registry::register(workspace.path(), &source, Some(alias), 1024, period).unwrap();
-    }
-    check(workspace.path(), true, async |client| {
-        for (alias, period) in [("plain", None), ("declared", Some(100))] {
-            for (name, mut args) in [
-                ("profile_summary", serde_json::json!({})),
-                ("profile_find_symbols", serde_json::json!({"query":"A"})),
-                ("profile_top", serde_json::json!({})),
-                ("profile_tree", serde_json::json!({})),
-                (
-                    "profile_callers",
-                    serde_json::json!({"frame":{"frame_name":"A"}}),
-                ),
-                (
-                    "profile_callees",
-                    serde_json::json!({"frame":{"frame_name":"A"}}),
-                ),
-                (
-                    "profile_paths",
-                    serde_json::json!({"through":{"frame_name":"A"}}),
-                ),
-            ] {
-                args["profile"] = serde_json::json!(alias);
-                let response = client
-                    .call_tool(
-                        CallToolRequestParams::new(name)
-                            .with_arguments(args.as_object().unwrap().clone()),
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(response.is_error, Some(false), "{name}");
-                let value = response.structured_content.unwrap();
-                let semantics = &value["profile"]["weight_semantics"];
-                assert_eq!(semantics["unit"], "opaque", "{name}");
-                assert_eq!(semantics["basis"], "folded_input", "{name}");
-                assert_eq!(semantics["sample_period_us"].as_u64(), period, "{name}");
-                assert_eq!(value["scope_weight"], 5, "metadata must not rescale {name}");
+async fn profile_identity() {
+    sample(async |client| {
+        for (name, args) in [
+            ("profile_summary", serde_json::json!({})),
+            ("profile_find_symbols", serde_json::json!({"query":"A"})),
+            ("profile_top", serde_json::json!({})),
+            ("profile_tree", serde_json::json!({})),
+            (
+                "profile_callers",
+                serde_json::json!({"frame":{"frame_name":"A"}}),
+            ),
+            (
+                "profile_callees",
+                serde_json::json!({"frame":{"frame_name":"A"}}),
+            ),
+            (
+                "profile_paths",
+                serde_json::json!({"through":{"frame_name":"A"}}),
+            ),
+            (
+                "profile_diff",
+                serde_json::json!({"baseline":"sample","candidate":"sample"}),
+            ),
+        ] {
+            let response = client
+                .call_tool(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(args.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.is_error, Some(false));
+            let value = response.structured_content.unwrap();
+            let sides: &[&str] = if name == "profile_diff" {
+                &["baseline", "candidate"]
+            } else {
+                &["profile"]
+            };
+            for side in sides {
+                let identity = &value[side];
+                assert_eq!(identity.as_object().unwrap().len(), 3, "{name}");
+                assert_eq!(identity["alias"], "sample");
+                assert_eq!(identity["fingerprint"].as_str().unwrap().len(), 64);
+                assert_eq!(
+                    identity["weight_semantics"],
+                    serde_json::json!({"unit":"opaque","basis":"folded_input"})
+                );
             }
-        }
-        let response = client
-            .call_tool(
-                CallToolRequestParams::new("profile_diff").with_arguments(
-                    serde_json::json!({"baseline":"declared", "candidate":"other"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                ),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.is_error, Some(false));
-        let value = response.structured_content.unwrap();
-        for (side, period) in [("baseline", 100), ("candidate", 200)] {
-            assert_eq!(value[side]["weight_semantics"]["unit"], "opaque");
-            assert_eq!(value[side]["weight_semantics"]["sample_period_us"], period);
-            assert_eq!(value["scope_weight"][side], 5);
         }
     })
     .await;

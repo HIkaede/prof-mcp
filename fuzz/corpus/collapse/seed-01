@@ -1,0 +1,5 @@
+worker 12 1.0: 4 cycles:
+  7 leaf (/tmp/a)
+
+worker 12 2.0: 1 instructions:
+  7 leaf (/tmp/a)

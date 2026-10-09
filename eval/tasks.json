@@ -1,0 +1,88 @@
+[
+  {
+    "id": "self_hotspot",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Find the largest self-weight frame. Return frame and weight."
+  },
+  {
+    "id": "inclusive_region",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Find the largest inclusive region excluding the root frame named root. Return frame and weight."
+  },
+  {
+    "id": "ambiguous_symbol",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Resolve all exact frame names matching compute. Return frames, sorted by name."
+  },
+  {
+    "id": "dominant_caller",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Find the immediate caller contributing the most weight to leaf. Return caller and weight."
+  },
+  {
+    "id": "dominant_callee",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Find the immediate callee branch with greatest weight under dispatch. Return callee and weight."
+  },
+  {
+    "id": "heavy_paths",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Return the three heaviest complete stacks through dispatch, as paths objects with frames and weight."
+  },
+  {
+    "id": "recursion",
+    "profiles": [
+      "baseline"
+    ],
+    "prompt": "Return frame=recursive and its self_weight and inclusive_weight. Count each contributing stack once for inclusive weight."
+  },
+  {
+    "id": "diff",
+    "profiles": [
+      "baseline",
+      "candidate"
+    ],
+    "prompt": "Compare self weight of read from baseline to candidate. Return frame, baseline_weight, candidate_weight, delta_pp."
+  },
+  {
+    "id": "large_profile",
+    "profiles": [
+      "large"
+    ],
+    "prompt": "Find the largest self-weight frame. Return frame and weight."
+  },
+  {
+    "id": "cpp_identity",
+    "profiles": [
+      "cpp"
+    ],
+    "prompt": "Resolve the two exact names containing ns::make and their self weights. Return frames objects with name and weight, sorted by name."
+  },
+  {
+    "id": "tree_continuation",
+    "profiles": [
+      "tree"
+    ],
+    "prompt": "Recover the heaviest branch and its leaf under root. For MCP, start profile_tree with max_nodes=2, then use a returned continuation. Return branch, leaf, weight."
+  },
+  {
+    "id": "malformed_recovery",
+    "profiles": [
+      "malformed",
+      "baseline"
+    ],
+    "prompt": "Validate malformed.folded, report error_code, then recover by summarizing valid baseline and report total_weight. For MCP run the explicit register CLI in your isolated workspace for malformed input; then query baseline."
+  }
+]

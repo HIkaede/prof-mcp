@@ -16,10 +16,7 @@ pub fn percent(weight: u64, scope: u64) -> f64 {
 
 pub fn profile_meta(profile: &Profile) -> Value {
     json!({
-        "canonical_path": profile.source.canonical_path.display().to_string(),
         "fingerprint": profile.source.fingerprint,
-        "byte_len": profile.source.byte_len,
-        "modified_unix_ms": profile.source.modified_unix_ms,
         "weight_semantics": {"unit":"opaque", "basis":"folded_input"},
     })
 }
@@ -38,7 +35,6 @@ pub fn envelope(
         "truncated":!truncation_reasons.is_empty(),
         "truncation_reasons":truncation_reasons,
         "warnings":warnings,
-        "next_steps":[],
         "data":data
     })
 }

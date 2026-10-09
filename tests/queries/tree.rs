@@ -2,7 +2,7 @@ use crate::support;
 use prof_mcp::query;
 
 #[test]
-fn tree_pruning_is_deterministic_and_continuations_are_guarded() {
+fn tree_pruning_and_continuations() {
     let profile = support::profile("A 5\nB 4\nC 1\n");
     let one = query::tree(&profile, 0, None, 0, 1, 0.0).unwrap();
     assert!(one["truncated"].as_bool().unwrap());

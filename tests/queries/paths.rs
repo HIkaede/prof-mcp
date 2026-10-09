@@ -2,7 +2,7 @@ use crate::support;
 use prof_mcp::query::{self, FrameSelector, FrameWindow, TopSort};
 
 #[test]
-fn paths_report_recursive_positions_and_row_limits() {
+fn recursive_path_positions() {
     let profile = support::profile("root;foo;foo;bar 10\nroot;foo;z 5\n");
     let foo = support::frame(&profile, "foo");
     let paths = query::paths(
@@ -24,7 +24,7 @@ fn paths_report_recursive_positions_and_row_limits() {
 }
 
 #[test]
-fn path_windows_crop_display_only_and_keep_all_recursive_positions() {
+fn recursive_display_windows() {
     let profile = support::profile("root;a;foo;foo;b;leaf 10\n");
     let foo = support::frame(&profile, "foo");
     let selector = FrameSelector {
@@ -131,7 +131,7 @@ fn path_windows_crop_display_only_and_keep_all_recursive_positions() {
 }
 
 #[test]
-fn paths_total_frame_budget_is_ordered_bounded_and_reports_requested_ranges() {
+fn path_frame_budget() {
     let profile = support::profile("root;a;b;foo;c;d;e 10\nroot;x;foo;y;z 5\n");
     let foo = support::frame(&profile, "foo");
     let selector = FrameSelector {
@@ -230,7 +230,7 @@ fn paths_total_frame_budget_is_ordered_bounded_and_reports_requested_ranges() {
 }
 
 #[test]
-fn path_windows_cover_root_leaf_and_multi_stack_boundaries_without_changing_selection() {
+fn path_window_boundaries() {
     let profile = support::profile("foo;middle;leaf 2\nroot;foo;branch 10\nroot;x;foo;branch 20\n");
     let foo = support::frame(&profile, "foo");
     let leaf = support::frame(&profile, "leaf");
@@ -281,7 +281,7 @@ fn path_windows_cover_root_leaf_and_multi_stack_boundaries_without_changing_sele
     assert_eq!(leaf_row["omitted_after"], 0);
 
     let baseline = query::paths(&profile, &foo_selector, 2).unwrap();
-    let top_before = query::top(&profile, TopSort::SelfWeight, 20, None, None, false).unwrap();
+    let top_before = query::top(&profile, TopSort::SelfWeight, 20, None, None).unwrap();
     let cropped = query::paths_with_window(
         &profile,
         &foo_selector,
@@ -289,7 +289,7 @@ fn path_windows_cover_root_leaf_and_multi_stack_boundaries_without_changing_sele
         Some(FrameWindow::Head { lines: 1 }),
     )
     .unwrap();
-    let top_after = query::top(&profile, TopSort::SelfWeight, 20, None, None, false).unwrap();
+    let top_after = query::top(&profile, TopSort::SelfWeight, 20, None, None).unwrap();
     assert_eq!(cropped["scope_weight"], baseline["scope_weight"]);
     assert_eq!(cropped["scope_weight"], 32);
     assert_eq!(
@@ -313,7 +313,7 @@ fn path_windows_cover_root_leaf_and_multi_stack_boundaries_without_changing_sele
 }
 
 #[test]
-fn paths_rows_omit_zero_bookkeeping_when_nothing_is_cropped() {
+fn uncropped_path_rows() {
     let profile = support::profile("root;a;b;foo 10\n");
     let foo = support::frame(&profile, "foo");
     let result = query::paths_with_window_budget(

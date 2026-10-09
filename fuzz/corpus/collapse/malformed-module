@@ -1,0 +1,2 @@
+worker 12 1.0: 1 cycles:
+  7 foo @(/tmp/lib(foo.so)

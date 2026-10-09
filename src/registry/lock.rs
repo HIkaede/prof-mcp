@@ -112,7 +112,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn lock_identity_rejects_a_replaced_regular_file() {
+    fn reject_replaced_lock() {
         let root = tempdir().unwrap();
         let lock = root.path().join(".register.lock");
         let replacement = root.path().join("replacement.lock");

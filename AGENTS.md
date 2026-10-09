@@ -54,17 +54,17 @@ folded text. Do not add capture behavior to MCP request handling.
 
 ## Integration side effects
 
-- Direct invocation with no arguments runs Codex setup; an explicit profile
-  argument remains the registration shorthand.
+- Direct invocation with no arguments prints help without persistent side effects;
+  an explicit profile argument remains the registration shorthand.
 - `capture` is Linux-only and must pass the target command directly to system
   `perf`; it must not invoke a shell. It parses `perf script` output in Rust,
   then reuses `registry::register`, preserving size, parser, alias, and
   atomic-write checks.
-- `setup` may update the Codex MCP registration and the global
-  `$CODEX_HOME/AGENTS.md`. It must be idempotent, support `--dry-run`, refuse
+- `setup` only updates the Codex MCP registration. It must be idempotent,
+  support `--dry-run`, refuse
   conflicting custom registrations, and avoid a partial successful setup.
-- Do not make the repository-local `AGENTS.md` a runtime source of truth. The
-  setup guidance embedded in `src/setup.rs` is the managed global guidance.
+- Agent guidance is documentation, not a runtime source of truth. Setup must
+  preserve global agent instructions.
 
 ## Code ownership
 

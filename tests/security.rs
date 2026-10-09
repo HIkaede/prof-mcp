@@ -4,11 +4,11 @@ use prof_mcp::{cache::ProfileCache, registry};
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn registry_resolves_only_registered_aliases_and_rejects_corruption() {
+async fn resolve_aliases_safely() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("ok.folded");
     fs::write(&source, "root;safe 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("ok"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("ok"), 1024).unwrap();
     let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
     assert_eq!(cache.load(None).await.unwrap().alias, "ok");
     assert_eq!(
@@ -29,7 +29,7 @@ async fn registry_resolves_only_registered_aliases_and_rejects_corruption() {
 }
 
 #[tokio::test]
-async fn missing_workspace_is_a_business_error_not_startup_failure() {
+async fn missing_workspace_error() {
     // Discovery walks ancestors, so Linux tmpfs keeps this test independent
     // from an unrelated developer registry under `/tmp`.
     #[cfg(target_os = "linux")]
@@ -45,7 +45,7 @@ async fn missing_workspace_is_a_business_error_not_startup_failure() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn non_utf8_workspace_path_returns_json_safe_profile_metadata() {
+async fn non_utf8_workspace_metadata() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
     let parent = tempdir().unwrap();
@@ -55,10 +55,13 @@ async fn non_utf8_workspace_path_returns_json_safe_profile_metadata() {
     fs::create_dir(&workspace).unwrap();
     let source = workspace.join("input.folded");
     fs::write(&source, "root;safe 1\n").unwrap();
-    registry::register(&workspace, &source, Some("safe"), 1024, None).unwrap();
+    registry::register(&workspace, &source, Some("safe"), 1024).unwrap();
     let cache = ProfileCache::new(workspace, 1024, 2).unwrap();
     let loaded = cache.load(None).await.unwrap();
     let summary = prof_mcp::query::summary(&loaded.profile);
     assert_eq!(summary["schema_version"], "2");
-    assert!(summary["profile"]["canonical_path"].is_string());
+    assert_eq!(
+        summary["profile"]["fingerprint"],
+        loaded.profile.source.fingerprint
+    );
 }

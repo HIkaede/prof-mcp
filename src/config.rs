@@ -9,15 +9,12 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
-    /// Backward-compatible shorthand for `prof-mcp register PROFILE`.
+    /// Shorthand for `prof-mcp register PROFILE`.
     #[arg(value_name = "PROFILE")]
     pub profile: Option<std::path::PathBuf>,
-    /// Alias for the backward-compatible PROFILE form.
+    /// Alias for the PROFILE shorthand.
     #[arg(long, value_name = "ALIAS", requires = "profile")]
     pub name: Option<String>,
-    /// User-declared sampling period metadata in microseconds; does not convert weights.
-    #[arg(long, value_name = "US", requires = "profile")]
-    pub sample_period_us: Option<u64>,
     /// Maximum accepted profile file size in MiB.
     #[arg(long, default_value_t = 512, global = true)]
     pub max_file_size_mib: u64,
@@ -31,7 +28,7 @@ pub struct Cli {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
-    /// Install prof-mcp into Codex and update global AGENTS.md guidance.
+    /// Register the prof-mcp MCP server in Codex.
     Setup {
         /// Print the intended changes without writing them.
         #[arg(long)]
@@ -45,13 +42,11 @@ pub enum Command {
     },
     /// Validate and register one folded profile in the current workspace.
     Register {
+        /// Folded profile path, or - to read stdin.
         #[arg(value_name = "PROFILE")]
         profile: std::path::PathBuf,
         #[arg(long, value_name = "ALIAS")]
         name: Option<String>,
-        /// User-declared period metadata in microseconds; does not convert weights.
-        #[arg(long, value_name = "US")]
-        sample_period_us: Option<u64>,
     },
     /// List the registry root, active alias, and registered profiles.
     List,
@@ -72,9 +67,6 @@ pub enum Command {
     Capture {
         #[arg(long, value_name = "ALIAS")]
         name: Option<String>,
-        /// User-declared period metadata; does not configure perf or convert weights.
-        #[arg(long, value_name = "US")]
-        sample_period_us: Option<u64>,
         /// Command to profile, after `--`.
         #[arg(required = true, last = true, value_name = "COMMAND")]
         command: Vec<std::ffi::OsString>,
@@ -91,7 +83,6 @@ pub enum Command {
 pub struct Config {
     pub profile: Option<std::path::PathBuf>,
     pub name: Option<String>,
-    pub sample_period_us: Option<u64>,
     pub max_file_size_mib: u64,
     pub cache_capacity: usize,
     pub log_level: String,
@@ -102,7 +93,6 @@ impl From<&Cli> for Config {
         Self {
             profile: None,
             name: None,
-            sample_period_us: cli.sample_period_us,
             max_file_size_mib: cli.max_file_size_mib,
             cache_capacity: cli.cache_capacity,
             log_level: cli.log_level.clone(),

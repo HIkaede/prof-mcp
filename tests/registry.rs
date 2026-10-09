@@ -4,12 +4,12 @@ use prof_mcp::registry::{self, Manifest};
 use tempfile::tempdir;
 
 #[test]
-fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
+fn register_and_deduplicate() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("first.folded");
     let input = b"root;A 3\r\nroot;B 4\n";
     fs::write(&source, input).unwrap();
-    let first = registry::register(workspace.path(), &source, None, 1024, None).unwrap();
+    let first = registry::register(workspace.path(), &source, None, 1024).unwrap();
     assert_eq!(first.alias, "first");
     assert_eq!(fs::read(&source).unwrap(), input);
     let registered = workspace
@@ -22,8 +22,7 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
         "# prof-mcp data files are local to this workspace.\n# Keep this file visible so the registry directory can be intentionally ignored.\n*\n!.gitignore\n"
     );
 
-    let second =
-        registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+    let second = registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
     assert_eq!(second.fingerprint, first.fingerprint);
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
@@ -39,7 +38,7 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
 
     fs::write(&source, b"root;new 1\n").unwrap();
     let replacement =
-        registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+        registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
     )
@@ -67,24 +66,24 @@ fn registration_copies_exact_bytes_deduplicates_and_replaces_active_alias() {
 }
 
 #[test]
-fn registration_rejects_invalid_alias_regular_file_and_size_without_manifest() {
+fn validate_registration() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("bad/slash"), 1024, None)
+        registry::register(workspace.path(), &source, Some("bad/slash"), 1024)
             .unwrap_err()
             .code,
         "invalid_profile_alias"
     );
     assert_eq!(
-        registry::register(workspace.path(), workspace.path(), Some("dir"), 1024, None)
+        registry::register(workspace.path(), workspace.path(), Some("dir"), 1024)
             .unwrap_err()
             .code,
         "not_a_regular_file"
     );
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("big"), 1, None)
+        registry::register(workspace.path(), &source, Some("big"), 1)
             .unwrap_err()
             .code,
         "profile_too_large"
@@ -93,11 +92,11 @@ fn registration_rejects_invalid_alias_regular_file_and_size_without_manifest() {
 }
 
 #[test]
-fn manifest_unknown_fields_and_escape_paths_are_rejected() {
+fn reject_invalid_manifest_fields() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
     let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
@@ -110,11 +109,11 @@ fn manifest_unknown_fields_and_escape_paths_are_rejected() {
 }
 
 #[test]
-fn manifest_absolute_and_parent_profile_paths_are_rejected() {
+fn reject_escaping_profile_paths() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
     let valid_manifest = fs::read(&manifest).unwrap();
     for escaped in ["../outside.folded", "/tmp/outside.folded"] {
@@ -137,12 +136,12 @@ fn discovery_finds_root_from_descendant() {
     fs::create_dir_all(&child).unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     assert_eq!(registry::resolve(&child, None).unwrap().alias, "base");
 }
 
 #[test]
-fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() {
+fn recover_lock_contention() {
     use std::fs::OpenOptions;
     use std::process::Command;
 
@@ -151,7 +150,7 @@ fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() 
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let lock = workspace.path().join(".prof-mcp/.register.lock");
     assert!(lock.exists());
     let lock_file = OpenOptions::new()
@@ -161,7 +160,7 @@ fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() 
         .unwrap();
     lock_file.lock_exclusive().unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("api"), 1024, None)
+        registry::register(workspace.path(), &source, Some("api"), 1024)
             .unwrap_err()
             .code,
         "registry_busy"
@@ -176,17 +175,17 @@ fn registry_busy_is_recoverable_for_api_and_cli_with_persistent_advisory_lock() 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Another registry operation"));
     drop(lock_file);
-    registry::register(workspace.path(), &source, Some("api"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("api"), 1024).unwrap();
     assert!(lock.exists());
 }
 
 #[test]
-fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaking_lock() {
+fn reject_invalid_manifests() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     let bytes = b"root;A 1\n";
     fs::write(&source, bytes).unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let manifest_path = workspace.path().join(".prof-mcp/manifest.json");
     let valid_manifest = fs::read(&manifest_path).unwrap();
     let mut variants: Vec<serde_json::Value> = Vec::new();
@@ -222,7 +221,7 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
     fs::write(&failed_source, failed_bytes).unwrap();
     fs::write(&manifest_path, b"{").unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &failed_source, Some("new"), 1024, None)
+        registry::register(workspace.path(), &failed_source, Some("new"), 1024)
             .unwrap_err()
             .code,
         "registry_corrupt"
@@ -247,7 +246,7 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
     assert_eq!(fs::read(&source).unwrap(), bytes);
     assert_eq!(fs::read(&failed_source).unwrap(), failed_bytes);
     fs::write(&manifest_path, valid_manifest).unwrap();
-    registry::register(workspace.path(), &failed_source, Some("new"), 1024, None).unwrap();
+    registry::register(workspace.path(), &failed_source, Some("new"), 1024).unwrap();
     assert_eq!(
         registry::resolve(workspace.path(), None).unwrap().alias,
         "new"
@@ -255,16 +254,16 @@ fn malformed_and_invalid_manifest_matrix_is_rejected_without_publishing_or_leaki
 }
 
 #[test]
-fn gc_only_removes_unreferenced_regular_profile_blobs_and_supports_dry_run() {
+fn gc_unreferenced_blobs() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     fs::write(&source, "root;B 2\n").unwrap();
     let old_candidate =
-        registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+        registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
     fs::write(&source, "root;C 3\n").unwrap();
-    registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
 
     let profiles = workspace.path().join(".prof-mcp/profiles");
     let manual_orphan = format!("{}.folded", "f".repeat(64));
@@ -328,7 +327,7 @@ fn gc_only_removes_unreferenced_regular_profile_blobs_and_supports_dry_run() {
 
 #[cfg(unix)]
 #[test]
-fn registry_storage_symlinks_are_rejected_without_writing_outside_workspace() {
+fn reject_registry_symlinks() {
     use std::os::unix::fs::symlink;
 
     let workspace = tempdir().unwrap();
@@ -338,7 +337,7 @@ fn registry_storage_symlinks_are_rejected_without_writing_outside_workspace() {
 
     symlink(outside.path(), workspace.path().join(".prof-mcp")).unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("base"), 1024, None)
+        registry::register(workspace.path(), &source, Some("base"), 1024)
             .unwrap_err()
             .code,
         "registry_corrupt"
@@ -349,7 +348,7 @@ fn registry_storage_symlinks_are_rejected_without_writing_outside_workspace() {
     fs::create_dir(workspace.path().join(".prof-mcp")).unwrap();
     symlink(outside.path(), workspace.path().join(".prof-mcp/profiles")).unwrap();
     assert_eq!(
-        registry::register(workspace.path(), &source, Some("base"), 1024, None)
+        registry::register(workspace.path(), &source, Some("base"), 1024)
             .unwrap_err()
             .code,
         "registry_corrupt"
@@ -359,15 +358,14 @@ fn registry_storage_symlinks_are_rejected_without_writing_outside_workspace() {
 
 #[cfg(unix)]
 #[test]
-fn registered_profile_file_symlink_is_rejected() {
+fn reject_profile_symlink() {
     use std::os::unix::fs::symlink;
 
     let workspace = tempdir().unwrap();
     let outside = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    let registered =
-        registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    let registered = registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let file = workspace
         .path()
         .join(".prof-mcp/profiles")
@@ -384,7 +382,7 @@ fn registered_profile_file_symlink_is_rejected() {
 
 #[cfg(unix)]
 #[test]
-fn non_utf8_profile_basename_registers_as_default_via_api_and_cli() {
+fn register_non_utf8_basename() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, process::Command};
 
     let api_workspace = tempdir().unwrap();
@@ -393,7 +391,7 @@ fn non_utf8_profile_basename_registers_as_default_via_api_and_cli() {
         .join(OsString::from_vec(b"\xff.folded".to_vec()));
     let bytes = b"root;safe 1\n";
     fs::write(&source, bytes).unwrap();
-    let registration = registry::register(api_workspace.path(), &source, None, 1024, None).unwrap();
+    let registration = registry::register(api_workspace.path(), &source, None, 1024).unwrap();
     assert_eq!(registration.alias, "default");
     assert_eq!(fs::read(&source).unwrap(), bytes);
     let manifest: Manifest = serde_json::from_slice(
@@ -419,31 +417,12 @@ fn non_utf8_profile_basename_registers_as_default_via_api_and_cli() {
 }
 
 #[test]
-fn registration_records_sample_period_and_rejects_zero() {
-    let workspace = tempdir().unwrap();
-    let source = workspace.path().join("s.folded");
-    fs::write(&source, "root;a 5\n").unwrap();
-    let registration =
-        registry::register(workspace.path(), &source, Some("timed"), 1024, Some(250)).unwrap();
-    assert_eq!(registration.sample_period_us, Some(250));
-    let manifest: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(manifest["profiles"]["timed"]["sample_period_us"], 250);
-    let resolved = registry::resolve(workspace.path(), None).unwrap();
-    assert_eq!(resolved.sample_period_us, Some(250));
-    let zero = registry::register(workspace.path(), &source, Some("zero"), 1024, Some(0));
-    assert_eq!(zero.unwrap_err().code, "invalid_sample_period");
-}
-
-#[test]
-fn remove_unlinks_aliases_without_deleting_shared_blobs() {
+fn remove_alias_preserves_blob() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    let first = registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
-    registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+    let first = registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
 
     let removal = registry::remove(workspace.path(), "base", None).unwrap();
     assert_eq!(removal.alias, "base");
@@ -467,11 +446,11 @@ fn remove_unlinks_aliases_without_deleting_shared_blobs() {
 }
 
 #[test]
-fn remove_active_alias_requires_existing_replacement_and_rejects_last_alias() {
+fn validate_active_alias_removal() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
-    registry::register(workspace.path(), &source, Some("base"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     assert_eq!(
         registry::remove(workspace.path(), "base", None)
             .unwrap_err()
@@ -480,7 +459,7 @@ fn remove_active_alias_requires_existing_replacement_and_rejects_last_alias() {
     );
 
     fs::write(&source, "root;B 2\n").unwrap();
-    registry::register(workspace.path(), &source, Some("candidate"), 1024, None).unwrap();
+    registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
     assert_eq!(
         registry::remove(workspace.path(), "candidate", None)
             .unwrap_err()
@@ -490,4 +469,127 @@ fn remove_active_alias_requires_existing_replacement_and_rejects_last_alias() {
     let removal = registry::remove(workspace.path(), "candidate", Some("base")).unwrap();
     assert_eq!(removal.active, "base");
     assert_eq!(registry::status(workspace.path()).unwrap().active, "base");
+}
+
+#[test]
+fn reader_matches_file() {
+    use std::io::Cursor;
+    let file_root = tempdir().unwrap();
+    let stream_root = tempdir().unwrap();
+    let bytes = "root;函数 4\r\nroot;函数 6".as_bytes();
+    let source = file_root.path().join("stdin.folded");
+    fs::write(&source, bytes).unwrap();
+    let file = registry::register(file_root.path(), &source, Some("base"), 1024).unwrap();
+    let stream = registry::register_reader(
+        stream_root.path(),
+        Cursor::new(bytes),
+        "stdin.folded",
+        Some("base"),
+        1024,
+    )
+    .unwrap();
+    assert_eq!(file.fingerprint, stream.fingerprint);
+    assert_eq!(file.byte_len, stream.byte_len);
+    for root in [file_root.path(), stream_root.path()] {
+        let resolved = registry::resolve(root, None).unwrap();
+        assert_eq!(resolved.alias, "base");
+        assert_eq!(fs::read(resolved.path).unwrap(), bytes);
+    }
+    let mut left: serde_json::Value = serde_json::from_slice(
+        &fs::read(file_root.path().join(".prof-mcp/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    let mut right: serde_json::Value = serde_json::from_slice(
+        &fs::read(stream_root.path().join(".prof-mcp/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    left["profiles"]["base"]
+        .as_object_mut()
+        .unwrap()
+        .remove("registered_unix_ms");
+    right["profiles"]["base"]
+        .as_object_mut()
+        .unwrap()
+        .remove("registered_unix_ms");
+    assert_eq!(left, right);
+}
+
+#[test]
+fn reader_failure_is_atomic() {
+    use std::io::{self, Cursor, Read};
+    struct Broken;
+    impl Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected read error"))
+        }
+    }
+    let root = tempdir().unwrap();
+    registry::register_reader(
+        root.path(),
+        Cursor::new(b"root;good 1\n"),
+        "stdin.folded",
+        Some("base"),
+        64,
+    )
+    .unwrap();
+    let manifest = root.path().join(".prof-mcp/manifest.json");
+    let before = fs::read(&manifest).unwrap();
+    for bytes in [
+        &b"invalid"[..],
+        &b"root;bad 0\n"[..],
+        &b"root;\xff 1\n"[..],
+        &b"root;large 123456\n"[..],
+    ] {
+        assert!(
+            registry::register_reader(
+                root.path(),
+                Cursor::new(bytes),
+                "stdin.folded",
+                Some("base"),
+                16
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+    }
+    assert!(
+        registry::register_reader(root.path(), Broken, "stdin.folded", Some("base"), 64).is_err()
+    );
+    assert!(
+        registry::register_reader(
+            root.path(),
+            Cursor::new(b"root 1\n"),
+            "../escape",
+            Some("base"),
+            64
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(&manifest).unwrap(), before);
+    assert_eq!(
+        fs::read_dir(root.path().join(".prof-mcp/profiles"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn reader_stops_at_limit() {
+    use std::io::{self, Read};
+    struct Endless(usize);
+    impl Read for Endless {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(b'x');
+            self.0 += buffer.len();
+            Ok(buffer.len())
+        }
+    }
+    let root = tempdir().unwrap();
+    let mut input = Endless(0);
+    let error =
+        registry::register_reader(root.path(), &mut input, "stdin.folded", None, 64).unwrap_err();
+    assert_eq!(error.code, "profile_too_large");
+    assert_eq!(input.0, 65);
+    assert!(!root.path().join(".prof-mcp").exists());
 }

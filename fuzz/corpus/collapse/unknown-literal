@@ -1,0 +1,8 @@
+worker 12 1.0: 1 cycles:
+  7 [unknown] (/tmp/a)
+
+worker 12 2.0: 1 cycles:
+  9 [unknown]@0x7 (/tmp/a)
+
+worker 12 3.0: 1 cycles:
+  a [unknown@0x7] (/tmp/a)

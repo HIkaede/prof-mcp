@@ -1,0 +1,3 @@
+root;ns::make<std::vector<int>>(int) 100
+root;ns::make<std::vector<double>>(double) 40
+root;operator<< 5

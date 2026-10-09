@@ -3,7 +3,7 @@ mod support;
 use prof_mcp::query::{self, FrameSelector};
 
 #[test]
-fn diamond_and_shared_callee_use_each_stack_once() {
+fn shared_callee_accounting() {
     let diamond = support::profile(support::DIAMOND);
     let x = support::frame(&diamond, "X");
     assert_eq!(diamond.frame_stats[x as usize].self_weight, 50);
@@ -52,7 +52,7 @@ fn diamond_and_shared_callee_use_each_stack_once() {
 }
 
 #[test]
-fn recursive_anchors_are_leaf_most_for_callers_and_root_most_for_callees() {
+fn recursive_direction_anchors() {
     let profile = support::profile(support::RECURSION);
     let foo = support::frame(&profile, "foo");
     assert_eq!(profile.frame_stats[foo as usize].inclusive_weight, 10);
@@ -89,7 +89,7 @@ fn recursive_anchors_are_leaf_most_for_callers_and_root_most_for_callees() {
 }
 
 #[test]
-fn callers_truncation_emits_node_path_continuations_that_resume() {
+fn resume_caller_continuations() {
     let profile = support::profile("root;mid;deep;deeper;anchor 10\n");
     let anchor = support::frame(&profile, "anchor");
     let shallow = query::callers(
@@ -134,7 +134,7 @@ fn callers_truncation_emits_node_path_continuations_that_resume() {
 }
 
 #[test]
-fn callers_continuation_rejects_wrong_fingerprint_and_bad_paths() {
+fn reject_invalid_continuations() {
     let profile = support::profile("root;mid;anchor 10\n");
     let anchor = support::frame(&profile, "anchor");
     let selector = FrameSelector {
@@ -146,4 +146,48 @@ fn callers_continuation_rejects_wrong_fingerprint_and_bad_paths() {
     assert_eq!(error.code, "profile_changed");
     let empty = query::callers(&profile, &selector, 1, 8, 0.0, Some((&[], "x"))).unwrap_err();
     assert_eq!(empty.code, "invalid_node_id");
+}
+
+#[test]
+fn repeated_direction_pages() {
+    let stack = (0..80)
+        .map(|i| format!("frame{i}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let profile = support::profile(&format!("{stack} 10\n"));
+    for callers in [true, false] {
+        let selector = FrameSelector {
+            frame_name: Some(if callers { "frame79" } else { "frame0" }.into()),
+            frame_id: None,
+        };
+        let direction = if callers {
+            query::callers
+        } else {
+            query::callees
+        };
+        let mut path = Vec::new();
+        for step in 0..80 {
+            let continuation = if path.is_empty() {
+                None
+            } else {
+                Some((path.as_slice(), profile.source.fingerprint.as_str()))
+            };
+            let page = direction(&profile, &selector, 0, 1, 0.0, continuation).unwrap();
+            let expected = if callers { 79 - step } else { step };
+            assert_eq!(page["data"]["root"]["name"], format!("frame{expected}"));
+            assert_eq!(page["scope_weight"], 10);
+            let omitted = page["data"]["continuations"].as_array().unwrap();
+            if step == 79 {
+                assert!(omitted.is_empty());
+            } else {
+                path = omitted[0]["node_path"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|id| id.as_u64().unwrap() as u32)
+                    .collect();
+                assert_eq!(path.len(), step + 1);
+            }
+        }
+    }
 }

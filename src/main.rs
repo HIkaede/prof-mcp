@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use prof_mcp::{
     capture,
     config::{Cli, Command, Config},
@@ -28,11 +28,7 @@ async fn main() -> Result<()> {
             }
             run_stdio(config).await
         }
-        Some(Command::Register {
-            profile,
-            name,
-            sample_period_us,
-        }) => register(&config, &profile, name.as_deref(), sample_period_us),
+        Some(Command::Register { profile, name }) => register(&config, &profile, name.as_deref()),
         Some(Command::List) => {
             let status = registry::status(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;
             println!("registry={}", status.registry_root.display());
@@ -66,13 +62,9 @@ async fn main() -> Result<()> {
             println!("removed alias={} active={}", removal.alias, removal.active);
             Ok(())
         }
-        Some(Command::Capture {
-            name,
-            sample_period_us,
-            command,
-        }) => {
-            let registration = capture::run(&config, name.as_deref(), sample_period_us, &command)
-                .map_err(anyhow::Error::msg)?;
+        Some(Command::Capture { name, command }) => {
+            let registration =
+                capture::run(&config, name.as_deref(), &command).map_err(anyhow::Error::msg)?;
             print_registration(&registration);
             Ok(())
         }
@@ -94,28 +86,29 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => match cli.profile {
-            Some(profile) => register(&config, &profile, cli.name.as_deref(), cli.sample_period_us),
-            None => setup::run(false),
+            Some(profile) => register(&config, &profile, cli.name.as_deref()),
+            None => {
+                Cli::command().print_help()?;
+                println!();
+                Ok(())
+            }
         },
     }
 }
 
-fn register(
-    config: &Config,
-    profile: &std::path::Path,
-    name: Option<&str>,
-    sample_period_us: Option<u64>,
-) -> Result<()> {
-    if sample_period_us == Some(0) {
-        bail!("--sample-period-us must be a positive integer");
+fn register(config: &Config, profile: &std::path::Path, name: Option<&str>) -> Result<()> {
+    let workspace = std::env::current_dir()?;
+    let registration = if profile == std::path::Path::new("-") {
+        registry::register_reader(
+            &workspace,
+            std::io::stdin().lock(),
+            "stdin.folded",
+            name,
+            config.max_file_size_bytes(),
+        )
+    } else {
+        registry::register(&workspace, profile, name, config.max_file_size_bytes())
     }
-    let registration = registry::register(
-        &std::env::current_dir()?,
-        profile,
-        name,
-        config.max_file_size_bytes(),
-        sample_period_us,
-    )
     .map_err(anyhow::Error::msg)?;
     print_registration(&registration);
     Ok(())
@@ -123,13 +116,7 @@ fn register(
 
 fn print_registration(registration: &registry::Registration) {
     println!(
-        "registered alias={} fingerprint={} bytes={} sample_period_us={}",
-        registration.alias,
-        registration.fingerprint,
-        registration.byte_len,
-        registration
-            .sample_period_us
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".into())
+        "registered alias={} fingerprint={} bytes={}",
+        registration.alias, registration.fingerprint, registration.byte_len
     );
 }

@@ -101,8 +101,6 @@ pub(crate) struct FindInput {
     #[serde(default = "default_find_limit")]
     #[schemars(range(min = 1, max = 100))]
     pub limit: usize,
-    #[serde(default)]
-    pub normalize: bool,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -117,8 +115,6 @@ pub(crate) struct TopInput {
     pub limit: usize,
     pub focus: Option<FrameSelectorInput>,
     pub name_regex: Option<String>,
-    #[serde(default)]
-    pub normalize: bool,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +156,7 @@ pub(crate) struct DirectionInput {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DirectionContinuationInput {
     #[serde(default)]
-    #[schemars(range(min = 1, max = 64))]
+    #[schemars(length(min = 1, max = 4096))]
     pub node_path: Vec<u32>,
     pub profile_fingerprint: String,
 }

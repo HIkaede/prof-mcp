@@ -2,7 +2,7 @@ use super::sample;
 use rmcp::model::CacheScope;
 
 #[tokio::test]
-async fn tool_order_and_modern_cache_metadata_preserve_the_contract() {
+async fn tool_order_and_cache_metadata() {
     sample(async |client| {
         let tools = client.list_tools(None).await.unwrap();
         assert_eq!(tools.ttl_ms, Some(0));
@@ -26,7 +26,7 @@ async fn tool_order_and_modern_cache_metadata_preserve_the_contract() {
 }
 
 #[tokio::test]
-async fn input_and_output_schemas_preserve_types_required_fields_and_limits() {
+async fn tool_schemas() {
     sample(async |client| {
         let tools = client.list_tools(None).await.unwrap();
         assert!(tools.tools.iter().all(|tool| {
@@ -36,6 +36,14 @@ async fn input_and_output_schemas_preserve_types_required_fields_and_limits() {
                 .and_then(|value| value.as_str())
                 == Some("object")
         }));
+        for tool in &tools.tools {
+            let schema = tool.output_schema.as_ref().unwrap();
+            assert!(
+                schema["properties"].get("next_steps").is_none(),
+                "{}",
+                tool.name
+            );
+        }
         let summary_schema = tools.tools[0].output_schema.as_ref().unwrap();
         assert!(
             summary_schema["anyOf"][0]["required"]
@@ -76,6 +84,19 @@ async fn input_and_output_schemas_preserve_types_required_fields_and_limits() {
                 .contains(&serde_json::json!("retry_hint"))
         );
         let find_schema = &tools.tools[1].input_schema;
+        for index in [1, 2] {
+            assert!(
+                tools.tools[index].input_schema["properties"]
+                    .get("normalize")
+                    .is_none()
+            );
+        }
+        let top_schema = tools.tools[2].output_schema.as_ref().unwrap();
+        assert!(
+            top_schema["$defs"]["TopData"]["properties"]
+                .get("grouped_rows")
+                .is_none()
+        );
         assert_eq!(find_schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(find_schema["properties"]["limit"]["maximum"], 100);
         assert!(
@@ -107,6 +128,11 @@ async fn input_and_output_schemas_preserve_types_required_fields_and_limits() {
             );
             assert_eq!(selector[0]["additionalProperties"], false);
             assert_eq!(selector[1]["additionalProperties"], false);
+        }
+        for index in [4, 5] {
+            let path = &tools.tools[index].input_schema["$defs"]["DirectionContinuationInput"]["properties"]["node_path"];
+            assert_eq!(path["minItems"], 1);
+            assert_eq!(path["maxItems"], 4096);
         }
         let paths_schema = &tools.tools[6].input_schema["$defs"]["FrameWindowInput"]["oneOf"];
         assert_eq!(paths_schema[0]["properties"]["lines"]["minimum"], 1);

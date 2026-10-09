@@ -93,10 +93,10 @@ fn directional(
     // node_path from an earlier response addresses the same subtree here.
     let mut render_root: &TempNode = &root;
     if let Some((node_path, expected_fingerprint)) = continuation {
-        if node_path.is_empty() || node_path.len() > 64 {
+        if node_path.is_empty() || node_path.len() > 4096 {
             return Err(ApiError::new(
                 "invalid_node_id",
-                "continuation.node_path must contain between 1 and 64 frame ids",
+                "continuation.node_path must contain between 1 and 4096 frame ids",
                 json!({"node_path_len":node_path.len()}),
                 "Use a node_path returned by this direction query's continuations.",
             ));
@@ -139,7 +139,9 @@ fn directional(
         continuations: &mut continuations,
         continuation_count: &mut continuation_count,
         continuation_limit: 128,
-        frame_path: Vec::new(),
+        frame_path: continuation
+            .map(|(path, _)| path.to_vec())
+            .unwrap_or_default(),
     };
     let (node, _) = render_temp(profile, render_root, 0, &mut render);
     let truncation_reasons =
