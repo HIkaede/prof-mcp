@@ -32,6 +32,7 @@ async fn check(workspace: &Path, modern: bool, test: impl AsyncFnOnce(Peer<RoleC
         let server = ProfileServer::new_in_workspace(
             Config {
                 max_file_size_mib: 1,
+                max_cache_mib: 512,
             },
             workspace.to_owned(),
         )

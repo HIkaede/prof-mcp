@@ -29,7 +29,11 @@ pub enum Command {
         dry_run: bool,
     },
     /// Start the stdio MCP server.
-    Serve,
+    Serve {
+        /// Maximum estimated memory (MiB) retained by the profile cache; 0 disables caching.
+        #[arg(long, default_value_t = 512)]
+        max_cache_mib: u64,
+    },
     /// Validate and register one folded profile in the current workspace.
     Register {
         /// Folded profile path, or - to read stdin.
@@ -72,12 +76,18 @@ pub enum Command {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub max_file_size_mib: u64,
+    pub max_cache_mib: u64,
 }
 
 impl From<&Cli> for Config {
     fn from(cli: &Cli) -> Self {
+        let max_cache_mib = match cli.command.as_ref() {
+            Some(Command::Serve { max_cache_mib }) => *max_cache_mib,
+            _ => 512,
+        };
         Self {
             max_file_size_mib: cli.max_file_size_mib,
+            max_cache_mib,
         }
     }
 }
@@ -85,5 +95,39 @@ impl From<&Cli> for Config {
 impl Config {
     pub fn max_file_size_bytes(&self) -> u64 {
         self.max_file_size_mib.saturating_mul(1024 * 1024)
+    }
+
+    pub fn max_cache_bytes(&self) -> usize {
+        usize::try_from(self.max_cache_mib.saturating_mul(1024 * 1024)).unwrap_or(usize::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn serve_cache_budget_defaults_and_accepts_zero() {
+        for (args, expected) in [
+            (vec!["prof-mcp", "serve"], 512),
+            (vec!["prof-mcp", "serve", "--max-cache-mib", "0"], 0),
+            (vec!["prof-mcp", "serve", "--max-cache-mib", "64"], 64),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(super::Config::from(&cli).max_cache_mib, expected);
+        }
+    }
+
+    #[test]
+    fn cache_byte_conversion_saturates() {
+        let cli = Cli::try_parse_from([
+            "prof-mcp",
+            "serve",
+            "--max-cache-mib",
+            &u64::MAX.to_string(),
+        ])
+        .unwrap();
+        assert_eq!(super::Config::from(&cli).max_cache_bytes(), usize::MAX);
     }
 }

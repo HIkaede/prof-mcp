@@ -7,14 +7,11 @@ use crate::error::ApiError;
 use crate::registry;
 
 pub(crate) fn success(value: Value) -> CallToolResult {
-    let mut result = CallToolResult::structured(value);
-    let fallback = text_fallback(
-        result
-            .structured_content
-            .as_ref()
-            .expect("structured result retains content"),
-    );
+    let fallback = text_fallback(&value);
+    let mut result = CallToolResult::default();
     result.content = vec![ContentBlock::text(fallback)];
+    result.structured_content = Some(value);
+    result.is_error = Some(false);
     bounded_result(result)
 }
 pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
@@ -72,32 +69,32 @@ pub(crate) fn tag_diff_aliases(mut value: Value, baseline: &str, candidate: &str
 }
 pub(crate) fn tag_registry(mut value: Value, status: registry::RegistryStatus) -> Value {
     const REGISTRY_PROFILE_LIMIT: usize = 100;
-    let available = status.profiles.len();
+    let registry::RegistryStatus {
+        registry_root,
+        active,
+        profiles,
+    } = status;
+    let available = profiles.len();
     let returned = available.min(REGISTRY_PROFILE_LIMIT);
-    let mut profiles = Vec::with_capacity(returned);
-    if let Some(active) = status
-        .profiles
-        .iter()
-        .find(|profile| profile.alias == status.active)
-    {
-        profiles.push(active.clone());
+    let mut selected_profiles = Vec::with_capacity(returned);
+    let mut active_profile = None;
+    for profile in profiles {
+        if profile.alias == active {
+            active_profile = Some(profile);
+        } else if selected_profiles.len() < REGISTRY_PROFILE_LIMIT {
+            selected_profiles.push(profile);
+        }
     }
-    profiles.extend(
-        status
-            .profiles
-            .iter()
-            .filter(|profile| profile.alias != status.active)
-            .take(REGISTRY_PROFILE_LIMIT.saturating_sub(profiles.len()))
-            .cloned(),
-    );
-    let mut registry_value = serde_json::to_value(status).unwrap_or_else(|_| json!({}));
-    if let Some(registry) = registry_value.as_object_mut() {
-        registry.insert("profile_count".into(), json!(available));
-        registry.insert(
-            "profiles".into(),
-            serde_json::to_value(profiles).unwrap_or_else(|_| json!([])),
-        );
+    if let Some(active_profile) = active_profile {
+        selected_profiles.insert(0, active_profile);
+        selected_profiles.truncate(REGISTRY_PROFILE_LIMIT);
     }
+    let registry_value = json!({
+        "registry_root": registry_root.display().to_string(),
+        "active": active,
+        "profiles": selected_profiles,
+        "profile_count": available,
+    });
     if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
         data.insert("registry".into(), registry_value);
     }
@@ -219,11 +216,21 @@ pub(crate) fn text_fallback(value: &Value) -> String {
     ))
 }
 pub(crate) fn failure(error: ApiError) -> CallToolResult {
-    let mut result=CallToolResult::structured_error(serde_json::to_value(&error).unwrap_or_else(|_| json!({"code":"internal_error","message":"Could not serialize error","details":null,"retry_hint":"Retry."})));
+    let structured = serde_json::to_value(&error).unwrap_or_else(|_| {
+        json!({
+            "code":"internal_error",
+            "message":"Could not serialize error",
+            "details":null,
+            "retry_hint":"Retry."
+        })
+    });
+    let mut result = CallToolResult::default();
     result.content = vec![ContentBlock::text(bounded_text(&format!(
         "{}: {}",
         error.code, error.message
     )))];
+    result.structured_content = Some(structured);
+    result.is_error = Some(true);
     bounded_result(result)
 }
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;

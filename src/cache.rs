@@ -51,6 +51,11 @@ impl ProfileCache {
         })
     }
 
+    pub fn with_byte_budget(mut self, max_cached_bytes: usize) -> Self {
+        self.max_cached_bytes = max_cached_bytes;
+        self
+    }
+
     pub async fn load(&self, alias: Option<&str>) -> Result<LoadedProfile, ApiError> {
         let resolved = registry::resolve(&self.workspace, alias)?;
         let metadata = std::fs::metadata(&resolved.path).map_err(|source| {

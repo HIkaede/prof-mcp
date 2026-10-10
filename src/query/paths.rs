@@ -1,4 +1,6 @@
 use serde_json::{Value, json};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 use super::{
     ApiError, DEFAULT_MAX_TOTAL_FRAMES, FrameId, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES,
@@ -31,32 +33,9 @@ pub fn paths_with_window_budget(
     let frame = resolve_selector(profile, selector)?;
     let stack_ids = &profile.frame_to_stacks[frame as usize];
     let scope = profile.frame_stats[frame as usize].inclusive_weight;
-    let mut stacks = stack_ids.to_vec();
-    let order = |a: &u32, b: &u32| {
-        profile.stacks.weights[*b as usize]
-            .cmp(&profile.stacks.weights[*a as usize])
-            .then_with(|| {
-                profile
-                    .stacks
-                    .stack(*a)
-                    .frames
-                    .iter()
-                    .map(|id| profile.frame_name(*id))
-                    .cmp(
-                        profile
-                            .stacks
-                            .stack(*b)
-                            .frames
-                            .iter()
-                            .map(|id| profile.frame_name(*id)),
-                    )
-            })
-    };
-    let available = stacks.len();
-    if available > limit {
-        stacks.select_nth_unstable_by(limit, order);
-    }
-    stacks.truncate(limit);
+    let available = stack_ids.len();
+    let order = |a: &u32, b: &u32| path_order(profile, *a, *b);
+    let mut stacks = select_paths(profile, stack_ids, limit);
     stacks.sort_unstable_by(order);
     let mut truncation_reasons = row_limit_reason(limit, available);
     let selected_paths = stacks.len();
@@ -254,11 +233,66 @@ fn budget_range(
     }
 }
 
-fn frame_sequence(profile: &Profile, frames: &[FrameId]) -> Vec<String> {
-    frames
-        .iter()
-        .map(|id| profile.frame_name(*id).to_owned())
-        .collect()
+fn select_paths(profile: &Profile, stack_ids: &[u32], limit: usize) -> Vec<u32> {
+    if stack_ids.len() <= limit {
+        return stack_ids.to_vec();
+    }
+    let mut heap = BinaryHeap::with_capacity(limit);
+    for &id in stack_ids {
+        let candidate = PathCandidate { profile, id };
+        if heap.len() < limit {
+            heap.push(candidate);
+        } else if path_order(profile, id, heap.peek().expect("non-empty heap").id) == Ordering::Less
+        {
+            heap.pop();
+            heap.push(candidate);
+        }
+    }
+    heap.into_iter().map(|candidate| candidate.id).collect()
+}
+
+struct PathCandidate<'a> {
+    profile: &'a Profile,
+    id: u32,
+}
+
+impl PartialEq for PathCandidate<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for PathCandidate<'_> {}
+
+impl PartialOrd for PathCandidate<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PathCandidate<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        path_order(self.profile, self.id, other.id)
+    }
+}
+
+fn path_order(profile: &Profile, a: u32, b: u32) -> Ordering {
+    profile.stacks.weights[b as usize]
+        .cmp(&profile.stacks.weights[a as usize])
+        .then_with(|| {
+            let a = profile.stacks.stack(a).frames;
+            let b = profile.stacks.stack(b).frames;
+            for (&a, &b) in a.iter().zip(b) {
+                if a != b {
+                    return profile.frame_name(a).cmp(profile.frame_name(b));
+                }
+            }
+            a.len().cmp(&b.len())
+        })
+}
+
+fn frame_sequence<'a>(profile: &'a Profile, frames: &[FrameId]) -> Vec<&'a str> {
+    frames.iter().map(|id| profile.frame_name(*id)).collect()
 }
 
 #[cfg(test)]

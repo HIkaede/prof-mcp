@@ -79,3 +79,18 @@ async fn concurrent_loads_share_profile() {
     }
     assert_eq!(first.total_weight, 20_000);
 }
+
+#[tokio::test]
+async fn zero_byte_budget_disables_cache() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;leaf 1\n").unwrap();
+    registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+    let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2)
+        .unwrap()
+        .with_byte_budget(0);
+
+    let first = cache.load(None).await.unwrap();
+    let second = cache.load(None).await.unwrap();
+    assert!(!Arc::ptr_eq(&first.profile, &second.profile));
+}

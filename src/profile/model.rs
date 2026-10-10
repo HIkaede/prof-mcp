@@ -155,27 +155,74 @@ pub struct Profile {
     pub heaviest_stack_weights: [u64; 2],
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MemoryBreakdown {
+    pub frame_name_bytes: usize,
+    pub frame_offsets_bytes: usize,
+    pub frame_name_order_bytes: usize,
+    pub stack_offsets_bytes: usize,
+    pub stack_frames_bytes: usize,
+    pub stack_weights_bytes: usize,
+    pub frame_stats_bytes: usize,
+    pub posting_offsets_bytes: usize,
+    pub posting_entries_bytes: usize,
+    pub cct_nodes_bytes: usize,
+    pub cct_offsets_bytes: usize,
+    pub cct_edges_bytes: usize,
+    pub top_rankings_bytes: usize,
+    pub recursion_bytes: usize,
+    pub metadata_bytes: usize,
+    pub total_bytes: usize,
+}
+
 impl Profile {
     /// Conservative retained-allocation estimate, including container spare capacity.
     pub fn estimated_size_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.source.canonical_path.as_os_str().len()
-            + self.source.fingerprint.capacity()
-            + std::mem::size_of_val(&*self.frames.name_offsets)
-            + self.frames.name_text.len()
-            + std::mem::size_of_val(&*self.frames.name_order)
-            + std::mem::size_of_val(&*self.stacks.offsets)
-            + std::mem::size_of_val(&*self.stacks.frames)
-            + std::mem::size_of_val(&*self.stacks.weights)
-            + self.frame_stats.capacity() * std::mem::size_of::<FrameStats>()
-            + std::mem::size_of_val(&*self.frame_to_stacks.offsets)
-            + std::mem::size_of_val(&*self.frame_to_stacks.stack_ids)
-            + std::mem::size_of_val(&*self.cct.nodes)
-            + std::mem::size_of_val(&*self.cct.child_offsets)
-            + std::mem::size_of_val(&*self.cct.children)
-            + std::mem::size_of_val(&*self.top_self)
-            + std::mem::size_of_val(&*self.top_inclusive)
-            + std::mem::size_of_val(&*self.recursive_frames)
+        self.memory_breakdown().total_bytes
+    }
+
+    pub fn memory_breakdown(&self) -> MemoryBreakdown {
+        let mut result = MemoryBreakdown {
+            frame_name_bytes: self.frames.name_text.len(),
+            frame_offsets_bytes: std::mem::size_of_val(&*self.frames.name_offsets),
+            frame_name_order_bytes: std::mem::size_of_val(&*self.frames.name_order),
+            stack_offsets_bytes: std::mem::size_of_val(&*self.stacks.offsets),
+            stack_frames_bytes: std::mem::size_of_val(&*self.stacks.frames),
+            stack_weights_bytes: std::mem::size_of_val(&*self.stacks.weights),
+            frame_stats_bytes: self.frame_stats.capacity() * std::mem::size_of::<FrameStats>(),
+            posting_offsets_bytes: std::mem::size_of_val(&*self.frame_to_stacks.offsets),
+            posting_entries_bytes: std::mem::size_of_val(&*self.frame_to_stacks.stack_ids),
+            cct_nodes_bytes: std::mem::size_of_val(&*self.cct.nodes),
+            cct_offsets_bytes: std::mem::size_of_val(&*self.cct.child_offsets),
+            cct_edges_bytes: std::mem::size_of_val(&*self.cct.children),
+            top_rankings_bytes: std::mem::size_of_val(&*self.top_self)
+                + std::mem::size_of_val(&*self.top_inclusive),
+            recursion_bytes: std::mem::size_of_val(&*self.recursive_frames),
+            metadata_bytes: std::mem::size_of::<Self>()
+                + self.source.canonical_path.capacity()
+                + self.source.fingerprint.capacity(),
+            total_bytes: 0,
+        };
+        result.total_bytes = [
+            result.frame_name_bytes,
+            result.frame_offsets_bytes,
+            result.frame_name_order_bytes,
+            result.stack_offsets_bytes,
+            result.stack_frames_bytes,
+            result.stack_weights_bytes,
+            result.frame_stats_bytes,
+            result.posting_offsets_bytes,
+            result.posting_entries_bytes,
+            result.cct_nodes_bytes,
+            result.cct_offsets_bytes,
+            result.cct_edges_bytes,
+            result.top_rankings_bytes,
+            result.recursion_bytes,
+            result.metadata_bytes,
+        ]
+        .into_iter()
+        .sum();
+        result
     }
 
     pub fn frame_id(&self, name: &str) -> Option<FrameId> {

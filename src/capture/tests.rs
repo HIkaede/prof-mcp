@@ -62,6 +62,22 @@ fn preserve_symbol_names() {
 }
 
 #[test]
+fn encode_reserved_bytes_once_without_changing_unicode() {
+    assert_eq!(
+        super::encode_frame("前%;中[后] %25"),
+        "前%25%3B中%5B后%5D %2525"
+    );
+}
+
+#[test]
+fn collapse_keeps_process_then_reversed_stack_order() {
+    let input = "worker 12 1.0: 1 cycles:\n  7 leaf (/tmp/a)\n  8 parent (/tmp/a)\n";
+    let mut output = Vec::new();
+    collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
+    assert_eq!(output, b"worker;parent [/tmp/a];leaf [/tmp/a] 1\n");
+}
+
+#[test]
 fn reject_malformed_samples() {
     for input in [
         "not perf data\n",

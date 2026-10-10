@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
         .init();
     match cli.command {
         Some(Command::Setup { dry_run }) => setup::run(dry_run),
-        Some(Command::Serve) => run_stdio(config).await,
+        Some(Command::Serve { .. }) => run_stdio(config).await,
         Some(Command::Register { profile, name }) => register(&config, &profile, name.as_deref()),
         Some(Command::List) => {
             let status = registry::status(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;

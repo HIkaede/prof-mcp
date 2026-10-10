@@ -248,9 +248,13 @@ fn finish_sample(
         .checked_add(period)
         .filter(|sum| *sum <= limits.max_total_weight)
         .context("perf sample total weight exceeds maximum")?;
-    let mut frames = vec![process];
-    frames.extend(stack.drain(..).rev());
-    let key = frames.join(";");
+    let key_len = process.len() + stack.iter().map(String::len).sum::<usize>() + stack.len();
+    let mut key = String::with_capacity(key_len);
+    key.push_str(&process);
+    for frame in stack.drain(..).rev() {
+        key.push(';');
+        key.push_str(&frame);
+    }
     let entry = collapsed.entry(key).or_insert(0);
     *entry = entry
         .checked_add(period)
@@ -298,11 +302,22 @@ fn is_pid_field(field: &str) -> bool {
 // Percent escaping keeps folded separators unambiguous without conflating
 // a literal colon or percent sequence with the original symbol identity.
 fn encode_frame(frame: &str) -> String {
-    frame
-        .replace('%', "%25")
-        .replace(';', "%3B")
-        .replace('[', "%5B")
-        .replace(']', "%5D")
+    let extra = frame
+        .bytes()
+        .filter(|byte| matches!(byte, b'%' | b';' | b'[' | b']'))
+        .count()
+        .saturating_mul(2);
+    let mut encoded = String::with_capacity(frame.len().saturating_add(extra));
+    for ch in frame.chars() {
+        match ch {
+            '%' => encoded.push_str("%25"),
+            ';' => encoded.push_str("%3B"),
+            '[' => encoded.push_str("%5B"),
+            ']' => encoded.push_str("%5D"),
+            ch => encoded.push(ch),
+        }
+    }
+    encoded
 }
 
 fn parse_stack_line(line: &str) -> Option<String> {

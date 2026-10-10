@@ -167,3 +167,54 @@ fn bounded_diff_keeps_order() {
         }
     }
 }
+
+#[test]
+fn bounded_diff_matches_unbounded_reference_for_unicode_ties() {
+    let names = [
+        "alpha", "βeta", "中", "delta", "éclair", "gamma", "λ", "omega", "zeta", "尾", "a", "a2",
+        "foo",
+    ];
+    let baseline_input: String = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| format!("root;{name} {}\n", 10 + (index % 4) * 10))
+        .collect();
+    let candidate_input: String = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| format!("root;{name} {}\n", 40 - (index % 4) * 10))
+        .collect();
+    let baseline = support::profile(&baseline_input);
+    let candidate = support::profile(&candidate_input);
+    for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
+        for sort in [
+            DiffSort::Regression,
+            DiffSort::Improvement,
+            DiffSort::Absolute,
+        ] {
+            for regex in [None, Some("^(alpha|βeta|中|éclair|尾)$")] {
+                let reference =
+                    query::diff(&baseline, &candidate, metric, sort, 200, regex).unwrap();
+                let available = reference["data"]["rows"].as_array().unwrap().len();
+                for limit in [1, 3, 7, 20] {
+                    let bounded =
+                        query::diff(&baseline, &candidate, metric, sort, limit, regex).unwrap();
+                    assert_eq!(
+                        bounded["data"]["rows"],
+                        serde_json::Value::Array(
+                            reference["data"]["rows"].as_array().unwrap()[..limit.min(available)]
+                                .to_vec()
+                        )
+                    );
+                    assert_eq!(bounded["truncated"], available > limit);
+                    if available > limit {
+                        assert_eq!(
+                            bounded["truncation_reasons"][0]["available"],
+                            serde_json::json!(available)
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

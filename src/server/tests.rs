@@ -13,6 +13,7 @@ fn cold_query() {
     let server = ProfileServer::new_in_workspace(
         Config {
             max_file_size_mib: 1,
+            max_cache_mib: 512,
         },
         workspace.path().to_owned(),
     )
@@ -42,6 +43,7 @@ async fn query_worker() {
         ProfileServer::new_in_workspace(
             Config {
                 max_file_size_mib: 1,
+                max_cache_mib: 512,
             },
             workspace.path().to_owned(),
         )

@@ -55,7 +55,10 @@ impl ProfileServer {
         workspace: std::path::PathBuf,
     ) -> Result<Self, ApiError> {
         let max_file_size = config.max_file_size_bytes();
-        let cache = Arc::new(ProfileCache::new(workspace, max_file_size, 8)?);
+        let cache = Arc::new(
+            ProfileCache::new(workspace, max_file_size, 8)?
+                .with_byte_budget(config.max_cache_bytes()),
+        );
         Ok(Self {
             cache,
             query_gate: Arc::new(tokio::sync::Semaphore::new(1)),
