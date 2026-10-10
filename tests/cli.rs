@@ -131,10 +131,15 @@ exit 2
 fn version() {
     let binary = env!("CARGO_BIN_EXE_prof-mcp");
     let version = Command::new(binary).arg("--version").output().unwrap();
-    assert!(
-        String::from_utf8(version.stdout)
-            .unwrap()
-            .contains("prof-mcp 0.5.0")
+    assert!(version.status.success());
+    assert!(version.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        format!(
+            "prof-mcp {} ({})\n",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("PROF_MCP_GIT_HASH").unwrap_or("unknown")
+        )
     );
 }
 

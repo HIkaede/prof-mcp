@@ -4,25 +4,66 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   stable:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo +stable test --locked --all-targets --all-features
       - run: python3 eval/test_query.py
       - run: cargo +stable test --locked --release --test stdio
 
+  musl:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl compiler
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +stable test --locked --target x86_64-unknown-linux-musl --all-targets --all-features
+      - run: cargo +stable test --locked --target x86_64-unknown-linux-musl --release --test stdio
+      - name: Build Linux x64 musl binary
+        run: cargo +stable build --locked --release --target x86_64-unknown-linux-musl --bin prof-mcp
+      - name: Verify static linking and smoke test
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          binary = 'target/x86_64-unknown-linux-musl/release/prof-mcp'
+          elf = subprocess.check_output(['readelf', '-l', '-d', binary], text=True)
+          assert 'INTERP' not in elf and '(NEEDED)' not in elf, elf
+          subprocess.run([binary, '--help'], check=True)
+          version = subprocess.check_output([binary, '--version'], text=True)
+          assert f"({os.environ['GITHUB_SHA'][:12]})" in version, version
+          print(version, end='')
+          PY
+      - name: Package Linux x64 musl binary
+        run: tar -czf prof-mcp-linux-x64-musl.tar.gz -C target/x86_64-unknown-linux-musl/release prof-mcp
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prof-mcp-linux-x64-musl
+          path: prof-mcp-linux-x64-musl.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
       - run: cargo +1.88.0 test --locked --all-targets --all-features
 
   fuzz:
@@ -38,6 +79,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
       - run: cargo +stable build --locked --manifest-path fuzz/Cargo.toml --target x86_64-unknown-linux-gnu
       - run: |
           cp -r fuzz/corpus/folded /tmp/prof-fuzz-folded
@@ -45,3 +91,42 @@ jobs:
           fuzz/target/x86_64-unknown-linux-gnu/debug/folded /tmp/prof-fuzz-folded -runs=20000 -max_total_time=30 -max_len=65537 -timeout=3 -rss_limit_mb=512
           fuzz/target/x86_64-unknown-linux-gnu/debug/collapse /tmp/prof-fuzz-collapse -runs=20000 -max_total_time=30 -max_len=65537 -timeout=3 -rss_limit_mb=512
       - run: python3 eval/score.py --self-check
+
+  canary:
+    needs: [stable, musl, msrv, fuzz]
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: canary-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          name: prof-mcp-linux-x64-musl
+      - name: Publish rolling canary release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "Skipping superseded commit $GITHUB_SHA"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > "$RUNNER_TEMP/release-tags"
+          printf 'Rolling Linux x64 musl canary build.\n\nCommit: %s\nCI: %s/%s/actions/runs/%s\n' "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/canary-notes.md"
+          git tag --force canary "$GITHUB_SHA"
+          git push --force origin refs/tags/canary
+          if grep -Fxq canary "$RUNNER_TEMP/release-tags"; then
+            gh release upload canary prof-mcp-linux-x64-musl.tar.gz --clobber
+            gh release edit canary --title Canary --notes-file "$RUNNER_TEMP/canary-notes.md" --prerelease --latest=false
+            gh release view canary --json assets --jq '.assets[] | select(.name == "prof-mcp-linux-x64.tar.gz") | .name' > "$RUNNER_TEMP/gnu-assets"
+            if [ -s "$RUNNER_TEMP/gnu-assets" ]; then
+              gh release delete-asset canary prof-mcp-linux-x64.tar.gz --yes
+            fi
+          else
+            gh release create canary prof-mcp-linux-x64-musl.tar.gz --verify-tag --title Canary --notes-file "$RUNNER_TEMP/canary-notes.md" --prerelease --latest=false
+          fi

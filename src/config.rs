@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Clone, Debug, Parser)]
 #[command(
     name = "prof-mcp",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("PROF_MCP_GIT_HASH"), ")"),
     about = "Install, register, and query folded stack profiles"
 )]
 pub struct Cli {

@@ -1,16 +1,14 @@
 # Repository instructions
 
+## Documentation changes
+
+Do not create or modify documentation unless the user explicitly requests it.
+
 ## Scope
 
 `prof-mcp` is a Rust 2024, MSRV 1.88, workspace-local MCP server for folded
 stack profiles, with a thin Linux CLI capture pipeline. Keep the implementation
 small and preserve the existing read-only query boundary.
-
-The MCP server and query tools do not run profilers, read native `perf.data`,
-render SVG, run shell commands, or provide a TUI, HTTP, SQL, or DuckDB
-interface. The explicit Linux `capture` CLI may invoke `perf` through direct
-argv only, parse `perf script` output in Rust, and register the resulting
-folded text. Do not add capture behavior to MCP request handling.
 
 ## Runtime contract
 
@@ -43,10 +41,9 @@ folded text. Do not add capture behavior to MCP request handling.
   and registry paths before use. Reject symlinks, non-regular files, and paths
   that escape `.prof-mcp`.
 - Registry mutations (`register`, `use`, `remove`, and `gc`) are serialized by the
-  persistent advisory lock. Preserve recoverable lock contention. The lock relies
-  on Unix file identity and `src/registry/lock.rs` currently does not compile on
-  non-Unix targets, so claim only Unix/Linux support until conditional
-  compilation and a CI build check exist.
+  persistent advisory lock. Preserve recoverable lock contention. The lock
+  requires Unix file identity; claim only Unix/Linux support until non-Unix
+  conditional compilation and a CI build check exist.
 - `remove` deletes only a manifest alias. Removing the active alias requires an
   existing replacement alias, and the last alias cannot be removed. Blob
   deletion remains the responsibility of `gc`.
@@ -82,16 +79,15 @@ folded text. Do not add capture behavior to MCP request handling.
 - `src/server/`: MCP routing, input/output schemas, and response shaping.
 - `src/setup.rs`: Codex integration and its rollback/idempotency behavior.
 
-Keep changes in the narrowest responsible module. When a user-visible CLI, MCP
-tool, schema, limit, or persistence rule changes, update the tests and every doc
-that states it: `README.md`, its Chinese summary `docs/README.zh-CN.md`,
-`docs/contract.md`, `eval/README.md`, and `inspector.config.json`. Avoid new dependencies or abstractions unless the current modules
-cannot express the required behavior clearly.
+Keep changes in the narrowest responsible module. Update tests when a
+user-visible CLI, MCP tool, schema, limit, or persistence rule changes. Avoid
+new dependencies or abstractions unless the current modules cannot express
+the required behavior clearly.
 
 ## Required validation
 
-Run from the repository root. These mirror `.github/workflows/ci.yml`; if the
-two differ, CI is authoritative and this list must be updated:
+Run from the repository root. `.github/workflows/ci.yml` is authoritative if
+it differs from this list:
 
 ```bash
 cargo fmt --check
