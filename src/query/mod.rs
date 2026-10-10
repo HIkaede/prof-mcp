@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::error::ApiError;
 pub(crate) use crate::output::{envelope, frame_row, frame_row_with_percent_weight, percent};
-pub(crate) use crate::profile::{ContextNode, FrameId, FrameStats, NodeId, Profile, StackRecord};
+pub(crate) use crate::profile::{FrameId, FrameStats, NodeId, Profile};
 
 mod diff;
 mod direction;
@@ -177,9 +177,6 @@ pub(crate) fn tree_reason_values(
         .collect()
 }
 
-pub(crate) fn frame_order(profile: &Profile, a: FrameId, b: FrameId, sort: TopSort) -> Ordering {
-    frame_order_stats(profile, &profile.frame_stats, a, b, sort)
-}
 pub(crate) fn frame_order_stats(
     profile: &Profile,
     stats: &[FrameStats],
@@ -273,15 +270,33 @@ mod tests {
             .unwrap();
         let id = |name| profile.frame_id(name).unwrap();
         assert_eq!(
-            frame_order(&profile, id("a"), id("z"), TopSort::SelfWeight),
+            frame_order_stats(
+                &profile,
+                &profile.frame_stats,
+                id("a"),
+                id("z"),
+                TopSort::SelfWeight
+            ),
             Ordering::Less
         );
         assert_eq!(
-            frame_order(&profile, id("z"), id("b"), TopSort::Inclusive),
+            frame_order_stats(
+                &profile,
+                &profile.frame_stats,
+                id("z"),
+                id("b"),
+                TopSort::Inclusive
+            ),
             Ordering::Less
         );
         assert_eq!(
-            frame_order(&profile, id("b"), id("z"), TopSort::Inclusive),
+            frame_order_stats(
+                &profile,
+                &profile.frame_stats,
+                id("b"),
+                id("z"),
+                TopSort::Inclusive
+            ),
             Ordering::Greater
         );
     }

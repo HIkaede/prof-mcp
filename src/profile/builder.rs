@@ -1,17 +1,18 @@
 use std::{
+    cmp::Reverse,
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
 };
 
 use blake3::Hasher;
-use hashbrown::{HashMap, HashSet, hash_map::Entry};
+use hashbrown::{HashMap, hash_map::Entry};
 
 use crate::{
     error::{ApiError, ProfileError},
     profile::{
-        ContextCallTree, ContextNode, Frame, FrameId, FrameStats, Profile, SourceMeta, StackRecord,
-        folded::parse_line,
+        ContextCallTree, ContextNode, FrameId, FrameStats, FrameTable, PostingTable, Profile,
+        RecursionStats, SourceMeta, StackTable, folded::parse_line,
     },
 };
 
@@ -169,13 +170,11 @@ impl ProfileBuilder {
                 })?;
             }
         }
-        let mut stacks: Vec<_> = aggregated
-            .into_iter()
-            .map(|(frames, weight)| StackRecord { frames, weight })
-            .collect();
-        stacks.sort_by(|a, b| a.frames.cmp(&b.frames));
+        u32::try_from(stack_frames).map_err(|_| offset_overflow())?;
+        let mut stacks: Vec<_> = aggregated.into_iter().collect();
+        stacks.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let total_weight = stacks.iter().try_fold(0_u64, |total, stack| {
-            total.checked_add(stack.weight).ok_or_else(|| {
+            total.checked_add(stack.1).ok_or_else(|| {
                 ApiError::new(
                     "weight_overflow",
                     "Profile total weight overflowed",
@@ -194,6 +193,54 @@ impl ProfileBuilder {
             .into());
         }
         let frame_count = frame_names.len();
+        charge_model(
+            &mut model_bytes,
+            frame_count.saturating_mul(32),
+            self.limits.max_model_bytes,
+        )?;
+        let max_depth = stacks.iter().map(|s| s.0.len()).max().unwrap_or(0);
+        let mut offsets = Vec::with_capacity(stacks.len() + 1);
+        let mut flat_frames = Vec::with_capacity(stack_frames);
+        let mut weights = Vec::with_capacity(stacks.len());
+        offsets.push(0);
+        for (frames, weight) in stacks {
+            flat_frames.extend_from_slice(&frames);
+            offsets.push(u32::try_from(flat_frames.len()).map_err(|_| offset_overflow())?);
+            weights.push(weight);
+        }
+        let stacks = StackTable {
+            offsets: offsets.into_boxed_slice(),
+            frames: flat_frames.into_boxed_slice(),
+            weights: weights.into_boxed_slice(),
+        };
+        drop(interner);
+        let name_bytes = frame_names.iter().try_fold(0u32, |total, name| {
+            let len = u32::try_from(name.len()).map_err(|_| offset_overflow())?;
+            total.checked_add(len).ok_or_else(offset_overflow)
+        })?;
+        let mut name_text = String::with_capacity(name_bytes as usize);
+        let mut name_offsets = Vec::with_capacity(frame_count + 1);
+        name_offsets.push(0);
+        for name in frame_names {
+            name_text.push_str(&name);
+            name_offsets.push(u32::try_from(name_text.len()).map_err(|_| offset_overflow())?);
+        }
+        let mut frames = FrameTable {
+            name_text: name_text.into_boxed_str(),
+            name_offsets: name_offsets.into_boxed_slice(),
+            name_order: Box::new([]),
+        };
+        let mut name_order: Vec<_> = (0..frame_count as u32).collect();
+        name_order.sort_unstable_by(|a, b| frames.name(*a).cmp(frames.name(*b)));
+        frames.name_order = name_order.into_boxed_slice();
+        let mut nodes = vec![ContextNode {
+            frame: None,
+            self_weight: 0,
+            total_weight: 0,
+        }];
+        let mut parents = Vec::new();
+        let mut node_path = vec![0u32];
+        let mut previous = &[][..];
         let mut profile = Profile {
             source: SourceMeta {
                 canonical_path,
@@ -202,68 +249,179 @@ impl ProfileBuilder {
                 modified_unix_ms,
             },
             total_weight,
-            max_depth: stacks.iter().map(|s| s.frames.len()).max().unwrap_or(0),
-            frames: frame_names.into_iter().map(|name| Frame { name }).collect(),
-            frame_by_name: interner,
+            max_depth,
+            frames,
             stacks,
             frame_stats: vec![FrameStats::default(); frame_count],
-            frame_to_stacks: vec![Vec::new(); frame_count],
+            frame_to_stacks: PostingTable::default(),
+            top_self: Box::new([]),
+            top_inclusive: Box::new([]),
+            recursive_frames: Box::new([]),
+            heaviest_stack_weights: [0; 2],
             cct: ContextCallTree {
                 root: 0,
-                nodes: vec![ContextNode {
-                    frame: None,
-                    parent: None,
-                    self_weight: 0,
-                    total_weight: 0,
-                    children: HashMap::new(),
-                }],
+                nodes: Box::new([]),
+                child_offsets: Box::new([]),
+                children: Box::new([]),
             },
         };
+        let mut recursive: Vec<_> = (0..frame_count)
+            .map(|frame| RecursionStats {
+                frame: frame as u32,
+                ..RecursionStats::default()
+            })
+            .collect();
+        let mut occurrences = vec![0u32; frame_count];
+        let mut counts = vec![0u32; frame_count];
+        let mut seen = vec![u32::MAX; frame_count];
         for (stack_index, stack) in profile.stacks.iter().enumerate() {
-            let sid = u32::try_from(stack_index).expect("bounded by address space");
-            let mut node = profile.cct.root;
-            profile.cct.nodes[node as usize].total_weight += stack.weight;
-            for frame in stack.frames.iter().copied() {
-                let child =
-                    if let Some(child) = profile.cct.nodes[node as usize].children.get(&frame) {
-                        *child
-                    } else {
-                        check_model_limit(
-                            "cct_nodes",
-                            profile.cct.nodes.len().saturating_add(1),
-                            self.limits.max_cct_nodes,
-                        )?;
-                        charge_model(&mut model_bytes, 256, self.limits.max_model_bytes)?;
-                        let child = u32::try_from(profile.cct.nodes.len())
-                            .expect("bounded by address space");
-                        profile.cct.nodes.push(ContextNode {
-                            frame: Some(frame),
-                            parent: Some(node),
-                            self_weight: 0,
-                            total_weight: 0,
-                            children: HashMap::new(),
-                        });
-                        profile.cct.nodes[node as usize]
-                            .children
-                            .insert(frame, child);
-                        child
-                    };
-                node = child;
-                profile.cct.nodes[node as usize].total_weight += stack.weight;
+            let sid = u32::try_from(stack_index).map_err(|_| offset_overflow())?;
+            // ID-sorted stacks visit prefixes in the same order as the old trie.
+            let common = previous
+                .iter()
+                .zip(stack.frames)
+                .take_while(|(a, b)| a == b)
+                .count();
+            node_path.truncate(common + 1);
+            for &node in &node_path {
+                nodes[node as usize].total_weight += stack.weight;
             }
-            profile.cct.nodes[node as usize].self_weight += stack.weight;
-            let mut distinct = HashSet::new();
+            for &frame in &stack.frames[common..] {
+                check_model_limit(
+                    "cct_nodes",
+                    nodes.len().saturating_add(1),
+                    self.limits.max_cct_nodes,
+                )?;
+                charge_model(&mut model_bytes, 256, self.limits.max_model_bytes)?;
+                let child = u32::try_from(nodes.len()).map_err(|_| offset_overflow())?;
+                parents.push(*node_path.last().unwrap());
+                nodes.push(ContextNode {
+                    frame: Some(frame),
+                    self_weight: 0,
+                    total_weight: stack.weight,
+                });
+                node_path.push(child);
+            }
+            nodes[*node_path.last().unwrap() as usize].self_weight += stack.weight;
+            previous = stack.frames;
             for frame in stack.frames.iter().copied() {
-                if distinct.insert(frame) {
+                if seen[frame as usize] != sid {
+                    seen[frame as usize] = sid;
                     let stats = &mut profile.frame_stats[frame as usize];
                     stats.inclusive_weight += stack.weight;
                     stats.stack_count += 1;
-                    profile.frame_to_stacks[frame as usize].push(sid);
+                    counts[frame as usize] += 1;
+                    occurrences[frame as usize] = 1;
+                } else {
+                    let count = &mut occurrences[frame as usize];
+                    *count += 1;
+                    let recursion = &mut recursive[frame as usize];
+                    if *count == 2 {
+                        recursion.affected_weight += stack.weight;
+                    }
+                    recursion.max_occurrences = recursion.max_occurrences.max(*count);
                 }
             }
             let leaf = *stack.frames.last().expect("parser disallows empty stack");
             profile.frame_stats[leaf as usize].self_weight += stack.weight;
         }
+        let offsets = prefix_offsets(&counts)?;
+        let mut stack_ids = vec![0; *offsets.last().expect("sentinel") as usize];
+        let mut cursors = offsets[..frame_count].to_vec();
+        seen.fill(u32::MAX);
+        for (index, stack) in profile.stacks.iter().enumerate() {
+            let sid = u32::try_from(index).map_err(|_| offset_overflow())?;
+            for &frame in stack.frames {
+                let frame = frame as usize;
+                if seen[frame] != sid {
+                    seen[frame] = sid;
+                    stack_ids[cursors[frame] as usize] = sid;
+                    cursors[frame] += 1;
+                }
+            }
+        }
+        drop(counts);
+        drop(cursors);
+        // Reuse the stamp buffer as lexical ranks for integer-only sorting.
+        for (rank, &frame) in profile.frames.name_order.iter().enumerate() {
+            seen[frame as usize] = rank as u32;
+        }
+        let name_rank = seen;
+        drop(occurrences);
+        drop(node_path);
+        profile.frame_to_stacks = PostingTable {
+            offsets: offsets.into_boxed_slice(),
+            stack_ids: stack_ids.into_boxed_slice(),
+        };
+        let mut child_counts = vec![0u32; nodes.len()];
+        for &parent in &parents {
+            child_counts[parent as usize] += 1;
+        }
+        let child_offsets = prefix_offsets(&child_counts)?;
+        drop(child_counts);
+        let mut children = vec![0; parents.len()];
+        let mut cursors = child_offsets[..nodes.len()].to_vec();
+        for (index, &parent) in parents.iter().enumerate() {
+            children[cursors[parent as usize] as usize] =
+                u32::try_from(index + 1).map_err(|_| offset_overflow())?;
+            cursors[parent as usize] += 1;
+        }
+        drop(parents);
+        drop(cursors);
+        for range in child_offsets.windows(2) {
+            children[range[0] as usize..range[1] as usize].sort_unstable_by(|a, b| {
+                let an = &nodes[*a as usize];
+                let bn = &nodes[*b as usize];
+                bn.total_weight
+                    .cmp(&an.total_weight)
+                    .then_with(|| {
+                        name_rank[an.frame.unwrap() as usize]
+                            .cmp(&name_rank[bn.frame.unwrap() as usize])
+                    })
+                    .then(a.cmp(b))
+            });
+        }
+        profile.cct = ContextCallTree {
+            root: 0,
+            nodes: nodes.into_boxed_slice(),
+            child_offsets: child_offsets.into_boxed_slice(),
+            children: children.into_boxed_slice(),
+        };
+        let mut top_self: Vec<_> = (0..frame_count as u32).collect();
+        top_self.sort_unstable_by_key(|&id| {
+            (
+                Reverse(profile.frame_stats[id as usize].self_weight),
+                name_rank[id as usize],
+            )
+        });
+        let mut top_inclusive: Vec<_> = (0..frame_count as u32).collect();
+        top_inclusive.sort_unstable_by_key(|&id| {
+            let stats = &profile.frame_stats[id as usize];
+            (
+                Reverse(stats.inclusive_weight),
+                Reverse(stats.self_weight),
+                name_rank[id as usize],
+            )
+        });
+        profile.top_self = top_self.into_boxed_slice();
+        profile.top_inclusive = top_inclusive.into_boxed_slice();
+        recursive.retain(|row| row.max_occurrences > 1);
+        recursive.sort_unstable_by(|a, b| {
+            b.affected_weight
+                .cmp(&a.affected_weight)
+                .then_with(|| name_rank[a.frame as usize].cmp(&name_rank[b.frame as usize]))
+                .then(a.frame.cmp(&b.frame))
+        });
+        drop(name_rank);
+        recursive.truncate(5);
+        profile.recursive_frames = recursive.into_boxed_slice();
+        let mut weights = profile.stacks.weights.to_vec();
+        if weights.len() > 50 {
+            weights.select_nth_unstable_by(50, |a, b| b.cmp(a));
+            weights.truncate(50);
+        }
+        weights.sort_unstable_by(|a, b| b.cmp(a));
+        profile.heaviest_stack_weights = [weights.iter().take(10).sum(), weights.iter().sum()];
         Ok(profile)
     }
 }
@@ -297,7 +455,7 @@ fn read_bounded_line<R: BufRead>(
     }
 }
 
-// Conservative charges cover container slack, both name copies, and reverse indexes.
+// Conservative charges cover build scratch, container slack, names, and indexes.
 fn charge_model(used: &mut usize, amount: usize, limit: usize) -> Result<(), ApiError> {
     *used = used.saturating_add(amount);
     check_model_limit("model_bytes", *used, limit)
@@ -313,4 +471,44 @@ fn check_model_limit(resource: &str, actual: usize, limit: usize) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+fn offset_overflow() -> ApiError {
+    ApiError::new(
+        "profile_model_too_large",
+        "Profile exceeds the compact index address space",
+        serde_json::json!({"resource":"index_entries", "limit":u32::MAX}),
+        "Split the profile into smaller inputs.",
+    )
+}
+
+fn prefix_offsets(counts: &[u32]) -> Result<Vec<u32>, ApiError> {
+    let mut offsets = Vec::with_capacity(counts.len() + 1);
+    offsets.push(0u32);
+    for &count in counts {
+        offsets.push(
+            offsets
+                .last()
+                .unwrap()
+                .checked_add(count)
+                .ok_or_else(offset_overflow)?,
+        );
+    }
+    Ok(offsets)
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::prefix_offsets;
+
+    #[test]
+    fn offsets_check_overflow_and_keep_empty_ranges() {
+        assert_eq!(prefix_offsets(&[]).unwrap(), [0]);
+        assert_eq!(prefix_offsets(&[0, 2, 0, 1]).unwrap(), [0, 0, 2, 2, 3]);
+        assert_eq!(prefix_offsets(&[u32::MAX]).unwrap(), [0, u32::MAX]);
+        assert_eq!(
+            prefix_offsets(&[u32::MAX, 1]).unwrap_err().code,
+            "profile_model_too_large"
+        );
+    }
 }

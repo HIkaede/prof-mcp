@@ -1,8 +1,7 @@
 use serde_json::{Value, json};
 
 use super::{
-    ApiError, MatchMode, Profile, TopSort, check_limit, compile_regex, envelope, frame_order,
-    frame_row, row_limit_reason,
+    ApiError, MatchMode, Profile, check_limit, compile_regex, envelope, frame_row, row_limit_reason,
 };
 
 pub fn find_symbols(
@@ -16,16 +15,21 @@ pub fn find_symbols(
         MatchMode::Contains => None,
         MatchMode::Regex => Some(compile_regex(query)?),
     };
-    let mut ids: Vec<_> = (0..profile.frames.len() as u32)
-        .filter(|id| match &regex {
-            Some(regex) => regex.is_match(profile.frame_name(*id)),
-            None => profile.frame_name(*id).contains(query),
-        })
-        .collect();
-    ids.sort_by(|a, b| frame_order(profile, *a, *b, TopSort::Inclusive));
-    let available = ids.len();
+    let mut ids = Vec::with_capacity(limit);
+    let mut available = 0;
+    for &id in profile.top_inclusive.iter() {
+        let matches = match &regex {
+            Some(regex) => regex.is_match(profile.frame_name(id)),
+            None => profile.frame_name(id).contains(query),
+        };
+        if matches {
+            available += 1;
+            if ids.len() < limit {
+                ids.push(id);
+            }
+        }
+    }
     let truncation_reasons = row_limit_reason(limit, available);
-    ids.truncate(limit);
     let warnings = if ids.is_empty() {
         vec!["No exact frame identities matched.".into()]
     } else {

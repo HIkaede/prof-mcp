@@ -57,6 +57,74 @@ fn focused_top_scope() {
 }
 
 #[test]
+fn full_scope_top_matches_global_with_recursion_and_filters() {
+    let profile = support::profile("root;anchor;anchor;B 10\nroot;A;anchor;C 10\nroot;anchor 5\n");
+    let anchor = support::frame(&profile, "anchor");
+    let selector = FrameSelector {
+        frame_id: Some(anchor),
+        frame_name: None,
+    };
+    for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
+        for regex in [None, Some("B|C"), Some("absent")] {
+            for limit in [1, 20] {
+                let scoped = query::top(&profile, metric, limit, Some(&selector), regex).unwrap();
+                let mut global = query::top(&profile, metric, limit, None, regex).unwrap();
+                global["data"]["frame"] = serde_json::json!(anchor);
+                assert_eq!(scoped, global);
+            }
+        }
+    }
+}
+
+#[test]
+fn partial_scope_top_keeps_subset_weights_and_ranking() {
+    let profile = support::profile("root;A;B 10\nroot;C;B 100\nroot;A;D 20\n");
+    let selector = FrameSelector {
+        frame_name: Some("A".into()),
+        frame_id: None,
+    };
+    for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
+        let top = query::top(&profile, metric, 1, Some(&selector), Some("B|D")).unwrap();
+        assert_eq!(top["scope_weight"], 30);
+        let row = &top["data"]["rows"][0];
+        assert_eq!(row["name"], "D");
+        assert_eq!(row["self_weight"], 20);
+        assert_eq!(row["inclusive_weight"], 20);
+        assert_eq!(row["stack_count"], 1);
+        assert_eq!(top["truncation_reasons"][0]["available"], 2);
+    }
+}
+
+#[test]
+fn sparse_top_preserves_recursive_counts_and_weight_ties() {
+    for padding in [0, 256] {
+        let mut input = "root;A;A;B 10\nroot;A;C 10\nroot;D 100\n".to_owned();
+        for i in 0..padding {
+            input.push_str(&format!("root;unused{i} 1\n"));
+        }
+        let profile = support::profile(&input);
+        let selector = FrameSelector {
+            frame_name: Some("A".into()),
+            frame_id: None,
+        };
+        for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
+            let result = query::top(&profile, metric, 1, Some(&selector), Some("B|C")).unwrap();
+            assert_eq!(result["scope_weight"], 20);
+            let row = &result["data"]["rows"][0];
+            assert_eq!(row["name"], "B");
+            assert_eq!(row["self_weight"], 10);
+            assert_eq!(row["scope_percent"], 50.0);
+            assert_eq!(result["truncation_reasons"][0]["available"], 2);
+            let result = query::top(&profile, metric, 20, Some(&selector), Some("^A$")).unwrap();
+            let row = &result["data"]["rows"][0];
+            assert_eq!(row["self_weight"], 0);
+            assert_eq!(row["inclusive_weight"], 20);
+            assert_eq!(row["stack_count"], 2);
+        }
+    }
+}
+
+#[test]
 fn summary_shape() {
     let profile = support::profile("root;foo;foo;foo;bar 10\nroot;a;b;c 5\n");
     let summary = query::summary(&profile);

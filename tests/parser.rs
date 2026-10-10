@@ -116,7 +116,7 @@ fn parse_unicode_frames() {
         let profile = parse(input.as_bytes()).unwrap();
         assert_eq!(profile.total_weight, 3);
         assert!(profile.frame_id(name).is_some(), "{name}");
-        assert_eq!(profile.stacks[0].frames.len(), 3);
+        assert_eq!(profile.stacks.stack(0).frames.len(), 3);
     }
     for input in ["root;函数 nope\n", "root;函数 0\n"] {
         assert_eq!(

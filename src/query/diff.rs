@@ -17,6 +17,14 @@ struct DiffRow<'a> {
     delta_pp: f64,
 }
 
+struct Candidate<'a> {
+    name: &'a str,
+    baseline_weight: u64,
+    candidate_weight: u64,
+    delta_pp: f64,
+    name_rank: usize,
+}
+
 pub fn diff(
     baseline: &Profile,
     candidate: &Profile,
@@ -27,51 +35,70 @@ pub fn diff(
 ) -> Result<Value, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
     let regex = name_regex.map(compile_regex).transpose()?;
-    let mut names: Vec<&str> = baseline
-        .frames
-        .iter()
-        .map(|f| f.name.as_ref())
-        .chain(candidate.frames.iter().map(|f| f.name.as_ref()))
-        .collect();
-    names.sort_unstable();
-    names.dedup();
-    let mut rows: Vec<_> = names
-        .into_iter()
-        .filter_map(|name| {
-            if regex.as_ref().is_some_and(|re| !re.is_match(name)) {
-                return None;
-            }
-            let weight = |profile: &Profile| {
-                profile
-                    .frame_id(name)
-                    .map(|id| metric_weight(&profile.frame_stats[id as usize], metric))
-                    .unwrap_or(0)
-            };
-            let baseline_weight = weight(baseline);
-            let candidate_weight = weight(candidate);
-            let baseline_percent = percent(baseline_weight, baseline.total_weight);
-            let candidate_percent = percent(candidate_weight, candidate.total_weight);
-            Some(DiffRow {
-                name,
-                baseline_weight,
-                candidate_weight,
-                baseline_percent,
-                candidate_percent,
-                delta_pp: candidate_percent - baseline_percent,
-            })
-        })
-        .collect();
-    rows.sort_unstable_by(|a, b| {
+    let mut baseline_ids = baseline.frames.name_order.iter().copied().peekable();
+    let mut candidate_ids = candidate.frames.name_order.iter().copied().peekable();
+    let mut rows = Vec::new();
+    while baseline_ids.peek().is_some() || candidate_ids.peek().is_some() {
+        let baseline_id = baseline_ids.peek().copied();
+        let candidate_id = candidate_ids.peek().copied();
+        let ordering = match (baseline_id, candidate_id) {
+            (Some(a), Some(b)) => baseline.frame_name(a).cmp(candidate.frame_name(b)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => unreachable!("at least one dictionary has a frame"),
+        };
+        let mut baseline_weight = 0;
+        let mut candidate_weight = 0;
+        let mut name = "";
+        if ordering != std::cmp::Ordering::Greater {
+            let id = baseline_ids.next().unwrap();
+            name = baseline.frame_name(id);
+            baseline_weight = metric_weight(&baseline.frame_stats[id as usize], metric);
+        }
+        if ordering != std::cmp::Ordering::Less {
+            let id = candidate_ids.next().unwrap();
+            name = candidate.frame_name(id);
+            candidate_weight = metric_weight(&candidate.frame_stats[id as usize], metric);
+        }
+        if regex.as_ref().is_some_and(|re| !re.is_match(name)) {
+            continue;
+        }
+        let baseline_percent = percent(baseline_weight, baseline.total_weight);
+        let candidate_percent = percent(candidate_weight, candidate.total_weight);
+        rows.push(Candidate {
+            name,
+            baseline_weight,
+            candidate_weight,
+            delta_pp: candidate_percent - baseline_percent,
+            name_rank: rows.len(),
+        });
+    }
+    let order = |a: &Candidate<'_>, b: &Candidate<'_>| {
         let primary = match sort {
             DiffSort::Regression => b.delta_pp.total_cmp(&a.delta_pp),
             DiffSort::Improvement => a.delta_pp.total_cmp(&b.delta_pp),
             DiffSort::Absolute => b.delta_pp.abs().total_cmp(&a.delta_pp.abs()),
         };
-        primary.then_with(|| a.name.cmp(b.name))
-    });
+        primary.then(a.name_rank.cmp(&b.name_rank))
+    };
     let available = rows.len();
-    let truncation_reasons = row_limit_reason(limit, available);
+    if available > limit {
+        rows.select_nth_unstable_by(limit, order);
+    }
     rows.truncate(limit);
+    rows.sort_unstable_by(order);
+    let rows: Vec<_> = rows
+        .into_iter()
+        .map(|row| DiffRow {
+            name: row.name,
+            baseline_weight: row.baseline_weight,
+            candidate_weight: row.candidate_weight,
+            baseline_percent: percent(row.baseline_weight, baseline.total_weight),
+            candidate_percent: percent(row.candidate_weight, candidate.total_weight),
+            delta_pp: row.delta_pp,
+        })
+        .collect();
+    let truncation_reasons = row_limit_reason(limit, available);
     let warnings =
         vec!["Percentage-point changes do not prove causality or statistical significance."];
     Ok(

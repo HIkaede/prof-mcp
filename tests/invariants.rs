@@ -3,14 +3,89 @@ mod support;
 use prof_mcp::profile::Profile;
 
 fn assert_invariants(profile: &Profile) {
+    assert_eq!(profile.frames.name_offsets.len(), profile.frames.len() + 1);
+    assert_eq!(profile.frames.name_offsets[0], 0);
+    assert_eq!(
+        *profile.frames.name_offsets.last().unwrap() as usize,
+        profile.frames.name_text.len()
+    );
+    let mut ordered_names = profile.frames.iter().collect::<Vec<_>>();
+    ordered_names.sort_unstable();
+    assert_eq!(
+        profile
+            .frames
+            .name_order
+            .iter()
+            .map(|id| profile.frame_name(*id))
+            .collect::<Vec<_>>(),
+        ordered_names
+    );
+    for (id, name) in profile.frames.iter().enumerate() {
+        assert_eq!(profile.frame_id(name), Some(id as u32));
+    }
+    assert_eq!(profile.frame_id("missing-frame"), None);
+    for (order, inclusive) in [(&profile.top_self, false), (&profile.top_inclusive, true)] {
+        let mut expected: Vec<_> = (0..profile.frames.len() as u32).collect();
+        expected.sort_unstable_by(|a, b| {
+            let an = &profile.frame_stats[*a as usize];
+            let bn = &profile.frame_stats[*b as usize];
+            let metric = |stats: &prof_mcp::profile::FrameStats| {
+                if inclusive {
+                    stats.inclusive_weight
+                } else {
+                    stats.self_weight
+                }
+            };
+            metric(bn)
+                .cmp(&metric(an))
+                .then_with(|| bn.self_weight.cmp(&an.self_weight))
+                .then_with(|| profile.frame_name(*a).cmp(profile.frame_name(*b)))
+                .then(a.cmp(b))
+        });
+        assert_eq!(order.as_ref(), expected);
+    }
+    assert_eq!(profile.stacks.offsets.len(), profile.stacks.len() + 1);
+    assert_eq!(profile.stacks.offsets[0], 0);
+    assert_eq!(
+        *profile.stacks.offsets.last().unwrap() as usize,
+        profile.stacks.frames.len()
+    );
+    assert!(
+        profile
+            .stacks
+            .offsets
+            .windows(2)
+            .all(|range| range[0] < range[1])
+    );
+    assert_eq!(
+        profile.stacks.weights.iter().sum::<u64>(),
+        profile.total_weight
+    );
+    assert_eq!(
+        profile.frame_to_stacks.offsets.len(),
+        profile.frames.len() + 1
+    );
+    assert_eq!(profile.frame_to_stacks.offsets[0], 0);
+    assert_eq!(
+        *profile.frame_to_stacks.offsets.last().unwrap() as usize,
+        profile.frame_to_stacks.stack_ids.len()
+    );
+    assert_eq!(profile.cct.child_offsets.len(), profile.cct.nodes.len() + 1);
+    assert_eq!(profile.cct.child_offsets[0], 0);
+    assert_eq!(profile.cct.children.len(), profile.cct.nodes.len() - 1);
+    assert_eq!(
+        *profile.cct.child_offsets.last().unwrap() as usize,
+        profile.cct.children.len()
+    );
     assert_eq!(profile.root().total_weight, profile.total_weight);
-    for node in &profile.cct.nodes {
+    for (id, node) in profile.cct.nodes.iter().enumerate() {
         assert_eq!(
             node.total_weight,
             node.self_weight
-                + node
-                    .children
-                    .values()
+                + profile
+                    .cct
+                    .children(id as u32)
+                    .iter()
                     .map(|id| profile.cct.nodes[*id as usize].total_weight)
                     .sum::<u64>()
         );
@@ -30,24 +105,110 @@ fn assert_invariants(profile: &Profile) {
         );
     }
     for (frame, ids) in profile.frame_to_stacks.iter().enumerate() {
-        let mut unique = ids.clone();
+        let mut unique = ids.to_vec();
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), ids.len());
+        let expected: Vec<_> = profile
+            .stacks
+            .iter()
+            .enumerate()
+            .filter(|(_, stack)| stack.frames.contains(&(frame as u32)))
+            .map(|(id, _)| id as u32)
+            .collect();
+        assert_eq!(ids, expected);
+        let stats = &profile.frame_stats[frame];
+        assert_eq!(stats.stack_count as usize, ids.len());
+        assert_eq!(
+            stats.inclusive_weight,
+            ids.iter()
+                .map(|id| profile.stacks.stack(*id).weight)
+                .sum::<u64>()
+        );
         for id in ids {
-            assert!(
-                profile.stacks[*id as usize]
-                    .frames
-                    .contains(&(frame as u32))
-            );
+            assert!(profile.stacks.stack(*id).frames.contains(&(frame as u32)));
         }
     }
+    assert_reference_cct(profile);
+}
+
+fn assert_reference_cct(profile: &Profile) {
+    #[derive(Default)]
+    struct Node {
+        frame: Option<u32>,
+        self_weight: u64,
+        total_weight: u64,
+        children: std::collections::BTreeMap<u32, u32>,
+    }
+    let mut nodes = vec![Node::default()];
+    for stack in profile.stacks.iter() {
+        let mut node = 0;
+        nodes[node].total_weight += stack.weight;
+        for &frame in stack.frames {
+            let child = match nodes[node].children.get(&frame) {
+                Some(&id) => id,
+                None => {
+                    let id = nodes.len() as u32;
+                    nodes.push(Node {
+                        frame: Some(frame),
+                        ..Node::default()
+                    });
+                    nodes[node].children.insert(frame, id);
+                    id
+                }
+            };
+            node = child as usize;
+            nodes[node].total_weight += stack.weight;
+        }
+        nodes[node].self_weight += stack.weight;
+    }
+    assert_eq!(nodes.len(), profile.cct.nodes.len());
+    for (id, expected) in nodes.iter().enumerate() {
+        let actual = &profile.cct.nodes[id];
+        assert_eq!(
+            (actual.frame, actual.self_weight, actual.total_weight),
+            (expected.frame, expected.self_weight, expected.total_weight)
+        );
+        let mut children: Vec<_> = expected.children.values().copied().collect();
+        children.sort_by(|a, b| {
+            let an = &nodes[*a as usize];
+            let bn = &nodes[*b as usize];
+            bn.total_weight
+                .cmp(&an.total_weight)
+                .then_with(|| {
+                    profile
+                        .frame_name(an.frame.unwrap())
+                        .cmp(profile.frame_name(bn.frame.unwrap()))
+                })
+                .then(a.cmp(b))
+        });
+        assert_eq!(profile.cct.children(id as u32), children);
+    }
+}
+
+#[test]
+fn compact_layout_handles_empty_deep_and_prefix_stacks() {
+    assert_invariants(&support::profile(""));
+    let deep = vec!["recursive"; 4096].join(";");
+    let profile = support::profile(&format!("{deep} 7\nrecursive 3\nrecursive;branch 7\n"));
+    assert_invariants(&profile);
+    assert_eq!(profile.max_depth, 4096);
+    assert_eq!(profile.stacks.stack(0).frames.len(), 1);
+    assert_eq!(profile.recursive_frames[0].max_occurrences, 4096);
+    assert_eq!(profile.recursive_frames[0].affected_weight, 7);
 }
 
 #[test]
 fn cct_and_frame_index_invariants_hold() {
     assert_invariants(&support::profile(
         "root;A;B 30\nroot;A;C 20\nroot;A 5\nroot;foo;foo;bar 10\n",
+    ));
+}
+
+#[test]
+fn lexical_names_preserve_unicode_and_weight_ties() {
+    assert_invariants(&support::profile(
+        "根;é;z 7\n根;a;中 7\n根;é;é 7\n根;a;a 7\n根;z 14\n",
     ));
 }
 
@@ -60,7 +221,7 @@ fn stats_by_name(profile: &Profile) -> std::collections::BTreeMap<&str, (u64, u6
         .zip(&profile.frame_stats)
         .map(|(frame, stats)| {
             (
-                frame.name.as_ref(),
+                frame,
                 (stats.self_weight, stats.inclusive_weight, stats.stack_count),
             )
         })

@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::{
     ApiError, DEFAULT_MAX_TOTAL_FRAMES, FrameId, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES,
-    Profile, StackRecord, check_limit, envelope, percent, resolve_selector, row_limit_reason,
+    Profile, check_limit, envelope, percent, resolve_selector, row_limit_reason,
 };
 
 pub fn paths(profile: &Profile, selector: &FrameSelector, limit: usize) -> Result<Value, ApiError> {
@@ -30,25 +30,35 @@ pub fn paths_with_window_budget(
     check_limit(max_total_frames, 1, MAX_TOTAL_FRAMES, "max_total_frames")?;
     let frame = resolve_selector(profile, selector)?;
     let stack_ids = &profile.frame_to_stacks[frame as usize];
-    let scope: u64 = stack_ids
-        .iter()
-        .map(|id| profile.stacks[*id as usize].weight)
-        .sum();
-    let mut stacks: Vec<&StackRecord> = stack_ids
-        .iter()
-        .map(|id| &profile.stacks[*id as usize])
-        .collect();
-    stacks.sort_by(|a, b| {
-        b.weight.cmp(&a.weight).then_with(|| {
-            a.frames
-                .iter()
-                .map(|id| profile.frame_name(*id))
-                .cmp(b.frames.iter().map(|id| profile.frame_name(*id)))
-        })
-    });
+    let scope = profile.frame_stats[frame as usize].inclusive_weight;
+    let mut stacks = stack_ids.to_vec();
+    let order = |a: &u32, b: &u32| {
+        profile.stacks.weights[*b as usize]
+            .cmp(&profile.stacks.weights[*a as usize])
+            .then_with(|| {
+                profile
+                    .stacks
+                    .stack(*a)
+                    .frames
+                    .iter()
+                    .map(|id| profile.frame_name(*id))
+                    .cmp(
+                        profile
+                            .stacks
+                            .stack(*b)
+                            .frames
+                            .iter()
+                            .map(|id| profile.frame_name(*id)),
+                    )
+            })
+    };
     let available = stacks.len();
-    let mut truncation_reasons = row_limit_reason(limit, available);
+    if available > limit {
+        stacks.select_nth_unstable_by(limit, order);
+    }
     stacks.truncate(limit);
+    stacks.sort_unstable_by(order);
+    let mut truncation_reasons = row_limit_reason(limit, available);
     let selected_paths = stacks.len();
     let mut window_cropped_paths = 0usize;
     let mut window_omitted_before = 0usize;
@@ -58,7 +68,8 @@ pub fn paths_with_window_budget(
     let mut budget_returned = 0usize;
     let mut budget_cropped_paths = 0usize;
     let mut rows = Vec::new();
-    for stack in stacks {
+    for stack_id in stacks {
+        let stack = profile.stacks.stack(stack_id);
         let positions: Vec<_> = stack
             .frames
             .iter()

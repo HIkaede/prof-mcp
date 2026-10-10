@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{
-    ApiError, ContextNode, NodeId, Profile, RenderState, check_budget, envelope, percent,
-    tree_reason_values,
+    ApiError, NodeId, Profile, RenderState, check_budget, envelope, percent, tree_reason_values,
 };
 
 pub fn tree(
@@ -89,12 +88,12 @@ fn render_cct(
 ) -> (Value, bool) {
     *state.budget -= 1;
     let node = &profile.cct.nodes[node_id as usize];
-    let children = ordered_cct(profile, node);
+    let children = profile.cct.children(node_id);
     let mut rendered = Vec::new();
     let mut omitted_count = 0;
     let mut omitted_weight = 0;
     let mut truncated = false;
-    for child_id in children {
+    for &child_id in children {
         let child = &profile.cct.nodes[child_id as usize];
         let reason = if depth >= state.max_depth {
             Some("depth_limit")
@@ -135,20 +134,4 @@ fn render_cct(
         json!({"node_id":node_id,"frame_id":node.frame,"name":name,"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,state.scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
         truncated,
     )
-}
-fn ordered_cct(profile: &Profile, node: &ContextNode) -> Vec<NodeId> {
-    let mut children: Vec<_> = node.children.values().copied().collect();
-    children.sort_by(|a, b| {
-        let an = &profile.cct.nodes[*a as usize];
-        let bn = &profile.cct.nodes[*b as usize];
-        bn.total_weight
-            .cmp(&an.total_weight)
-            .then_with(|| {
-                profile
-                    .frame_name(an.frame.expect("not root"))
-                    .cmp(profile.frame_name(bn.frame.expect("not root")))
-            })
-            .then(a.cmp(b))
-    });
-    children
 }

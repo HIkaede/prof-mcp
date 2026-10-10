@@ -2,6 +2,45 @@ use crate::support;
 use prof_mcp::query::{self, FrameSelector, FrameWindow, TopSort};
 
 #[test]
+fn path_selection_orders_weight_ties_by_full_unicode_names() {
+    let profile =
+        support::profile("根;é;z 7\n根;a;中 7\n根;é;é 7\n根;a;a 7\n根;z 14\n根;a 7\n根;a;a;尾 7\n");
+    let selector = FrameSelector {
+        frame_name: Some("根".into()),
+        frame_id: None,
+    };
+    let expected = [
+        "根;z",
+        "根;a",
+        "根;a;a",
+        "根;a;a;尾",
+        "根;a;中",
+        "根;é;z",
+        "根;é;é",
+    ];
+    for limit in [1, 2, 4, 7, 20] {
+        let result = query::paths(&profile, &selector, limit).unwrap();
+        let names: Vec<_> = result["data"]["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                row["frames"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|name| name.as_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(";")
+            })
+            .collect();
+        assert_eq!(names, expected[..limit.min(expected.len())]);
+        assert_eq!(result["scope_weight"], 56);
+        assert_eq!(result["truncated"], limit < expected.len());
+    }
+}
+
+#[test]
 fn recursive_path_positions() {
     let profile = support::profile("root;foo;foo;bar 10\nroot;foo;z 5\n");
     let foo = support::frame(&profile, "foo");
