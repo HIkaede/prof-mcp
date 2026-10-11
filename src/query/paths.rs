@@ -1,32 +1,20 @@
+use crate::output::{PathRow, PathsData, PathsOutput, ResponseBudget, TotalFrameBudget};
 use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use super::{
-    ApiError, DEFAULT_MAX_TOTAL_FRAMES, FrameId, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES,
-    Profile, check_limit, envelope, percent, resolve_selector, row_limit_reason,
+    ApiError, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES, Profile, check_limit, envelope,
+    percent, resolve_selector, row_limit_reason,
 };
 
-pub fn paths(profile: &Profile, selector: &FrameSelector, limit: usize) -> Result<Value, ApiError> {
-    paths_with_window(profile, selector, limit, None)
-}
-
-pub fn paths_with_window(
-    profile: &Profile,
-    selector: &FrameSelector,
-    limit: usize,
-    window: Option<FrameWindow>,
-) -> Result<Value, ApiError> {
-    paths_with_window_budget(profile, selector, limit, window, DEFAULT_MAX_TOTAL_FRAMES)
-}
-
-pub fn paths_with_window_budget(
+pub(crate) fn paths_with_window_budget(
     profile: &Profile,
     selector: &FrameSelector,
     limit: usize,
     window: Option<FrameWindow>,
     max_total_frames: usize,
-) -> Result<Value, ApiError> {
+) -> Result<PathsOutput, ApiError> {
     check_limit(limit, 1, 50, "limit")?;
     check_frame_window(window)?;
     check_limit(max_total_frames, 1, MAX_TOTAL_FRAMES, "max_total_frames")?;
@@ -47,6 +35,7 @@ pub fn paths_with_window_budget(
     let mut budget_returned = 0usize;
     let mut budget_cropped_paths = 0usize;
     let mut rows = Vec::new();
+    let mut bytes = ResponseBudget::new();
     for stack_id in stacks {
         let stack = profile.stacks.stack(stack_id);
         let positions: Vec<_> = stack
@@ -88,46 +77,43 @@ pub fn paths_with_window_budget(
             .filter(|position| **position >= frame_start && **position < frame_end)
             .map(|position| *position - frame_start)
             .collect();
-        let mut row = serde_json::Map::new();
-        row.insert(
-            "frames".into(),
-            json!(frame_sequence(
-                profile,
-                &stack.frames[frame_start..frame_end]
-            )),
-        );
-        row.insert("weight".into(), json!(stack.weight));
-        row.insert(
-            "profile_percent".into(),
-            json!(percent(stack.weight, profile.total_weight)),
-        );
-        row.insert("scope_percent".into(), json!(percent(stack.weight, scope)));
-        row.insert("target_positions".into(), json!(positions));
-        row.insert(
-            "display_target_positions".into(),
-            json!(display_target_positions),
-        );
-        row.insert("total_depth".into(), json!(total_depth));
+        bytes.json(&positions)?;
+        bytes.json(&display_target_positions)?;
+        bytes.charge(64)?;
+        let frames = stack.frames[frame_start..frame_end]
+            .iter()
+            .map(|id| {
+                let name = profile.frame_name(*id);
+                bytes.json(&name)?;
+                Ok(name.to_owned())
+            })
+            .collect::<Result<_, ApiError>>()?;
         let cropped = requested_frame_start != frame_start || requested_frame_end != frame_end;
-        if window.is_some() || cropped {
-            row.insert("requested_frame_start".into(), json!(requested_frame_start));
-            row.insert("requested_frame_end".into(), json!(requested_frame_end));
-        }
-        row.insert("frame_start".into(), json!(frame_start));
-        row.insert("frame_end".into(), json!(frame_end));
-        let omitted_before = frame_start;
-        let omitted_after = total_depth - frame_end;
-        if omitted_before > 0 || omitted_after > 0 {
-            row.insert("omitted_before".into(), json!(omitted_before));
-            row.insert("omitted_after".into(), json!(omitted_after));
-        }
-        let budget_omitted_before = frame_start - requested_frame_start;
-        let budget_omitted_after = requested_frame_end - frame_end;
-        if budget_omitted_before > 0 || budget_omitted_after > 0 {
-            row.insert("budget_omitted_before".into(), json!(budget_omitted_before));
-            row.insert("budget_omitted_after".into(), json!(budget_omitted_after));
-        }
-        rows.push(Value::Object(row));
+        rows.push(PathRow {
+            frames,
+            weight: stack.weight,
+            profile_percent: percent(stack.weight, profile.total_weight),
+            scope_percent: percent(stack.weight, scope),
+            target_positions: positions,
+            display_target_positions,
+            total_depth,
+            requested_frame_start: if window.is_some() || cropped {
+                requested_frame_start
+            } else {
+                0
+            },
+            requested_frame_end: if window.is_some() || cropped {
+                requested_frame_end
+            } else {
+                0
+            },
+            frame_start,
+            frame_end,
+            omitted_before: frame_start,
+            omitted_after: total_depth - frame_end,
+            budget_omitted_before: frame_start - requested_frame_start,
+            budget_omitted_after: requested_frame_end - frame_end,
+        });
     }
     if window_cropped_paths > 0 {
         truncation_reasons.push(json!({
@@ -144,18 +130,19 @@ pub fn paths_with_window_budget(
         }));
     }
     let budget_omitted = budget_available - budget_returned;
-    let total_frame_budget = json!({
-        "limit":max_total_frames,
-        "available":budget_available,
-        "returned":budget_returned,
-        "omitted":budget_omitted,
-        "selected_paths":selected_paths,
-        "returned_paths":rows.len(),
-        "omitted_paths":selected_paths-rows.len(),
-        "cropped_paths":budget_cropped_paths,
-    });
+    let total_frame_budget = TotalFrameBudget {
+        limit: max_total_frames,
+        available: budget_available,
+        returned: budget_returned,
+        omitted: budget_omitted,
+        selected_paths,
+        returned_paths: rows.len(),
+        omitted_paths: selected_paths - rows.len(),
+        cropped_paths: budget_cropped_paths,
+    };
     if budget_omitted > 0 {
-        let mut reason = total_frame_budget
+        let mut reason = serde_json::to_value(&total_frame_budget)
+            .expect("static budget serializes")
             .as_object()
             .expect("static object")
             .clone();
@@ -167,7 +154,11 @@ pub fn paths_with_window_budget(
         scope,
         truncation_reasons,
         Vec::new(),
-        json!({"frame":frame,"paths":rows,"total_frame_budget":total_frame_budget}),
+        PathsData {
+            frame,
+            paths: rows,
+            total_frame_budget,
+        },
     ))
 }
 
@@ -289,10 +280,6 @@ fn path_order(profile: &Profile, a: u32, b: u32) -> Ordering {
             }
             a.len().cmp(&b.len())
         })
-}
-
-fn frame_sequence<'a>(profile: &'a Profile, frames: &[FrameId]) -> Vec<&'a str> {
-    frames.iter().map(|id| profile.frame_name(*id)).collect()
 }
 
 #[cfg(test)]

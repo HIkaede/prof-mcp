@@ -2,22 +2,26 @@
 
 use std::collections::BTreeMap;
 
+use crate::output::{
+    Continuation, ContinuationTool, DirectionContinuation, DirectionData, DirectionOutput,
+    ResponseBudget, TreeNode,
+};
 use hashbrown::HashMap;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::{
     ApiError, FrameId, FrameSelector, Profile, RenderState, check_budget, envelope, frame_row,
     percent, resolve_selector, tree_reason_values,
 };
 
-pub fn callers(
+pub(crate) fn callers(
     profile: &Profile,
     selector: &FrameSelector,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
     continuation: Option<(&[u32], &str)>,
-) -> Result<Value, ApiError> {
+) -> Result<DirectionOutput, ApiError> {
     directional(
         profile,
         selector,
@@ -28,14 +32,14 @@ pub fn callers(
         continuation,
     )
 }
-pub fn callees(
+pub(crate) fn callees(
     profile: &Profile,
     selector: &FrameSelector,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
     continuation: Option<(&[u32], &str)>,
-) -> Result<Value, ApiError> {
+) -> Result<DirectionOutput, ApiError> {
     directional(
         profile,
         selector,
@@ -55,7 +59,7 @@ fn directional(
     min_scope_percent: f64,
     callers: bool,
     continuation: Option<(&[u32], &str)>,
-) -> Result<Value, ApiError> {
+) -> Result<DirectionOutput, ApiError> {
     check_budget(max_depth, max_nodes, min_scope_percent)?;
     let frame = resolve_selector(profile, selector)?;
     let prefix = continuation.map(|(path, _)| path).unwrap_or_default();
@@ -148,11 +152,13 @@ fn directional(
         continuations: &mut continuations,
         continuation_count: &mut continuation_count,
         continuation_limit: 128,
+        bytes: ResponseBudget::new(),
         frame_path: continuation
             .map(|(path, _)| path.to_vec())
             .unwrap_or_default(),
     };
-    let (node, _) = render_temp(profile, &tree.nodes, 0, 0, &mut render);
+    render.bytes.row_name(profile.frame_name(frame))?;
+    let (node, _) = render_temp(profile, &tree.nodes, 0, 0, &mut render, frame, callers)?;
     let truncation_reasons =
         tree_reason_values(&reason_stats, max_depth, max_nodes, min_scope_percent);
     Ok(envelope(
@@ -160,15 +166,15 @@ fn directional(
         scope,
         truncation_reasons,
         Vec::new(),
-        json!({
-            "frame":frame_row(profile, frame, &profile.frame_stats[frame as usize], scope),
-            "root":node,
-            "continuations":continuations,
-            "continuations_truncated":continuation_count > continuations.len(),
-            "continuation_limit":128,
-            "continuations_available":continuation_count,
-            "continuations_omitted":continuation_count.saturating_sub(continuations.len())
-        }),
+        DirectionData {
+            frame: frame_row(profile, frame, &profile.frame_stats[frame as usize], scope),
+            root: node,
+            continuations_truncated: continuation_count > continuations.len(),
+            continuation_limit: 128,
+            continuations_available: continuation_count,
+            continuations_omitted: continuation_count.saturating_sub(continuations.len()),
+            continuations,
+        },
     ))
 }
 
@@ -284,10 +290,13 @@ fn render_temp(
     nodes: &[TempNode],
     node_id: u32,
     depth: usize,
-    state: &mut RenderState<'_>,
-) -> (Value, bool) {
+    state: &mut RenderState<'_, DirectionContinuation>,
+    anchor: FrameId,
+    callers: bool,
+) -> Result<(TreeNode, bool), ApiError> {
     *state.budget -= 1;
     let node = &nodes[node_id as usize];
+    state.bytes.row_name(profile.frame_name(node.frame))?;
     let children = ordered_children(profile, nodes, node);
     let mut rendered = Vec::new();
     let mut omitted_count = 0;
@@ -312,31 +321,56 @@ fn render_temp(
             omitted_weight += child.total_weight;
             truncated = true;
             if state.continuations.len() < state.continuation_limit {
-                let mut node_path = state.frame_path.clone();
-                node_path.push(id);
-                state.continuations.push(json!({
-                    "node_path":node_path,
-                    "frame_id":id,
-                    "name":profile.frame_name(id),
-                    "reason":reason,
-                    "profile_fingerprint":profile.source.fingerprint,
-                    "total_weight":child.total_weight,
-                    "profile_percent":percent(child.total_weight,profile.total_weight),
-                    "scope_percent":percent(child.total_weight,state.scope)
-                }));
+                state.bytes.row_name(profile.frame_name(id))?;
+                state.bytes.json(&state.frame_path)?;
+                state.bytes.json(&profile.source.fingerprint)?;
+                let mut cursor = Vec::with_capacity(state.frame_path.len() + 2);
+                cursor.push(anchor);
+                cursor.extend_from_slice(&state.frame_path);
+                cursor.push(id);
+                state.continuations.push(DirectionContinuation {
+                    frame_id: id,
+                    name: profile.frame_name(id).to_owned(),
+                    reason: reason.into(),
+                    continuation: Continuation {
+                        profile: String::new(),
+                        fingerprint: profile.source.fingerprint.clone(),
+                        tool: if callers {
+                            ContinuationTool::Callers
+                        } else {
+                            ContinuationTool::Callees
+                        },
+                        cursor,
+                    },
+                    total_weight: child.total_weight,
+                    profile_percent: percent(child.total_weight, profile.total_weight),
+                    scope_percent: percent(child.total_weight, state.scope),
+                });
             }
         } else {
             state.frame_path.push(id);
-            let (value, child_truncated) = render_temp(profile, nodes, child_id, depth + 1, state);
+            let (value, child_truncated) =
+                render_temp(profile, nodes, child_id, depth + 1, state, anchor, callers)?;
             state.frame_path.pop();
             truncated |= child_truncated;
             rendered.push(value);
         }
     }
-    (
-        json!({"node_id":Value::Null,"frame_id":node.frame,"name":profile.frame_name(node.frame),"self_weight":node.self_weight,"total_weight":node.total_weight,"profile_percent":percent(node.total_weight,profile.total_weight),"scope_percent":percent(node.total_weight,state.scope),"omitted_children":omitted_count,"omitted_weight":omitted_weight,"children":rendered}),
+    Ok((
+        TreeNode {
+            node_id: None,
+            frame_id: Some(node.frame),
+            name: Some(profile.frame_name(node.frame).to_owned()),
+            self_weight: node.self_weight,
+            total_weight: node.total_weight,
+            profile_percent: percent(node.total_weight, profile.total_weight),
+            scope_percent: percent(node.total_weight, state.scope),
+            omitted_children: omitted_count,
+            omitted_weight,
+            children: rendered,
+        },
         truncated,
-    )
+    ))
 }
 
 #[cfg(test)]

@@ -67,7 +67,7 @@ impl ProfileBuilder {
         mut reader: R,
         canonical_path: PathBuf,
         _byte_len: u64,
-        modified_unix_ms: Option<u64>,
+        _modified_unix_ms: Option<u64>,
     ) -> Result<Profile, ProfileError> {
         let mut model_bytes = 0usize;
         charge_model(&mut model_bytes, 256, self.limits.max_model_bytes)?;
@@ -248,10 +248,7 @@ impl ProfileBuilder {
         let mut previous = &[][..];
         let mut profile = Profile {
             source: SourceMeta {
-                canonical_path,
                 fingerprint: hasher.finalize().to_hex().to_string(),
-                byte_len: bytes_read,
-                modified_unix_ms,
             },
             total_weight,
             max_depth,

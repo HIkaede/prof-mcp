@@ -1,10 +1,8 @@
-use std::path::PathBuf;
-
 pub type FrameId = u32;
 pub type StackId = u32;
 pub type NodeId = u32;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct FrameTable {
     pub name_offsets: Box<[u32]>,
     pub name_text: Box<str>,
@@ -38,7 +36,7 @@ pub struct StackRecord<'a> {
     pub weight: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct StackTable {
     pub offsets: Box<[u32]>,
     pub frames: Box<[FrameId]>,
@@ -73,7 +71,7 @@ impl StackTable {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct PostingTable {
     pub offsets: Box<[u32]>,
     pub stack_ids: Box<[StackId]>,
@@ -109,7 +107,7 @@ pub struct ContextNode {
     pub total_weight: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ContextCallTree {
     pub nodes: Box<[ContextNode]>,
     pub child_offsets: Box<[u32]>,
@@ -126,10 +124,7 @@ impl ContextCallTree {
 
 #[derive(Clone, Debug)]
 pub struct SourceMeta {
-    pub canonical_path: PathBuf,
     pub fingerprint: String,
-    pub byte_len: u64,
-    pub modified_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -139,7 +134,7 @@ pub struct RecursionStats {
     pub affected_weight: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Profile {
     pub source: SourceMeta,
     pub total_weight: u64,
@@ -198,9 +193,7 @@ impl Profile {
             top_rankings_bytes: std::mem::size_of_val(&*self.top_self)
                 + std::mem::size_of_val(&*self.top_inclusive),
             recursion_bytes: std::mem::size_of_val(&*self.recursive_frames),
-            metadata_bytes: std::mem::size_of::<Self>()
-                + self.source.canonical_path.capacity()
-                + self.source.fingerprint.capacity(),
+            metadata_bytes: std::mem::size_of::<Self>() + self.source.fingerprint.capacity(),
             total_bytes: 0,
         };
         result.total_bytes = [

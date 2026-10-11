@@ -1,15 +1,15 @@
-use serde_json::{Value, json};
+use crate::output::{FindData, FindOutput, ResponseBudget};
 
 use super::{
     ApiError, MatchMode, Profile, check_limit, compile_regex, envelope, frame_row, row_limit_reason,
 };
 
-pub fn find_symbols(
+pub(crate) fn find_symbols(
     profile: &Profile,
     query: &str,
     mode: MatchMode,
     limit: usize,
-) -> Result<Value, ApiError> {
+) -> Result<FindOutput, ApiError> {
     check_limit(limit, 1, 100, "limit")?;
     let regex = match mode {
         MatchMode::Contains => None,
@@ -35,22 +35,33 @@ pub fn find_symbols(
     } else {
         Vec::new()
     };
+    let mut bytes = ResponseBudget::new();
+    bytes.json(&query)?;
     let rows: Vec<_> = ids
         .iter()
         .map(|id| {
-            frame_row(
+            bytes.row_name(profile.frame_name(*id))?;
+            Ok(frame_row(
                 profile,
                 *id,
                 &profile.frame_stats[*id as usize],
                 profile.total_weight,
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, ApiError>>()?;
     Ok(envelope(
         profile,
         profile.total_weight,
         truncation_reasons,
         warnings,
-        json!({"query":query,"mode":match mode {MatchMode::Contains=>"contains",MatchMode::Regex=>"regex"},"matches":rows}),
+        FindData {
+            query: query.into(),
+            mode: match mode {
+                MatchMode::Contains => "contains",
+                MatchMode::Regex => "regex",
+            }
+            .into(),
+            matches: rows,
+        },
     ))
 }

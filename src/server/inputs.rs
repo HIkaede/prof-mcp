@@ -160,25 +160,8 @@ pub(crate) struct DirectionInput {
     /// Copy a returned continuation unchanged; omit profile and frame.
     pub continuation: Option<Continuation>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Continuation {
-    pub profile: String,
-    pub fingerprint: String,
-    pub tool: ContinuationTool,
-    #[schemars(length(min = 1, max = 4097))]
-    pub cursor: Vec<u32>,
-}
+pub(crate) use crate::output::{Continuation, ContinuationTool};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-pub(crate) enum ContinuationTool {
-    #[serde(rename = "profile_tree")]
-    Tree,
-    #[serde(rename = "profile_callers")]
-    Callers,
-    #[serde(rename = "profile_callees")]
-    Callees,
-}
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PathsInput {

@@ -230,3 +230,44 @@ fn deep_continuation() {
     assert_eq!(leaf["data"]["root"]["total_weight"], 7);
     assert_eq!(leaf["data"]["continuations"], serde_json::json!([]));
 }
+
+#[test]
+fn deep_continuation_construction_has_a_byte_budget() {
+    let prefix = vec!["recursive"; 2048].join(";");
+    let input: String = (0..128)
+        .map(|i| format!("root;{prefix};leaf{i} 1\n"))
+        .collect();
+    let profile = support::profile(&input);
+    let selector = prof_mcp::query::FrameSelector {
+        frame_id: Some(support::frame(&profile, "root")),
+        frame_name: None,
+    };
+    let cursor = vec![support::frame(&profile, "recursive"); 2048];
+    let error = query::callees(
+        &profile,
+        &selector,
+        0,
+        1,
+        0.0,
+        Some((&cursor, &profile.source.fingerprint)),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "query_too_large");
+    assert_eq!(error.details["resource"], "response_bytes");
+    // Rendering these leaves needs no repeated deep cursors and still fits.
+    let page = query::callees(
+        &profile,
+        &selector,
+        1,
+        129,
+        0.0,
+        Some((&cursor, &profile.source.fingerprint)),
+    )
+    .unwrap();
+    assert_eq!(page["scope_weight"], 128);
+    assert_eq!(
+        page["data"]["root"]["children"].as_array().unwrap().len(),
+        128
+    );
+    assert!(page["data"]["continuations"].as_array().unwrap().is_empty());
+}

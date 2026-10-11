@@ -10,11 +10,11 @@ use super::inputs::{
 };
 use super::outputs::{
     DiffOutput, DirectionOutput, FindOutput, PathsOutput, SummaryOutput, TopOutput, TreeOutput,
-    typed_output, typed_output_schema,
+    typed_output_schema,
 };
-use super::respond::{failure, tag_alias, tag_continuations, tag_diff_aliases, tag_registry};
+use super::respond::{failure, tag_alias, tag_direction, tag_registry, tag_tree};
 use crate::error::ApiError;
-use crate::query::{self, FrameSelector, FrameWindow};
+use crate::query::{FrameSelector, FrameWindow, typed as query};
 use crate::registry;
 
 #[tool_router]
@@ -31,8 +31,8 @@ impl ProfileServer {
         let workspace = self.cache.workspace().to_owned();
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
             let status = registry::status(&workspace)?;
-            typed_output::<SummaryOutput>(tag_registry(
-                tag_alias(query::summary(&loaded.profile), &loaded.alias),
+            Ok(tag_registry(
+                tag_alias(query::summary(&loaded.profile)?, &loaded.alias),
                 status,
             ))
         })
@@ -50,7 +50,7 @@ impl ProfileServer {
                 parse_match(&input.mode)?,
                 input.limit,
             )
-            .and_then(|value| typed_output::<FindOutput>(tag_alias(value, &loaded.alias)))
+            .map(|value| tag_alias(value, &loaded.alias))
         })
         .await
     }
@@ -68,7 +68,7 @@ impl ProfileServer {
                 frame.as_ref(),
                 input.name_regex.as_deref(),
             )
-            .and_then(|value| typed_output::<TopOutput>(tag_alias(value, &loaded.alias)))
+            .map(|value| tag_alias(value, &loaded.alias))
         })
         .await
     }
@@ -100,13 +100,7 @@ impl ProfileServer {
                 input.max_nodes,
                 input.min_scope_percent,
             )
-            .and_then(|value| {
-                typed_output::<TreeOutput>(tag_continuations(
-                    tag_alias(value, &loaded.alias),
-                    &loaded.alias,
-                    ContinuationTool::Tree,
-                ))
-            })
+            .map(|value| tag_tree(value, &loaded.alias))
         })
         .await
     }
@@ -171,13 +165,7 @@ impl ProfileServer {
                     .as_ref()
                     .map(|c| (&c.cursor[1..], c.fingerprint.as_str())),
             )
-            .and_then(|value| {
-                typed_output::<DirectionOutput>(tag_continuations(
-                    tag_alias(value, &loaded.alias),
-                    &loaded.alias,
-                    tool,
-                ))
-            })
+            .map(|value| tag_direction(value, &loaded.alias))
         })
         .await
     }
@@ -196,7 +184,7 @@ impl ProfileServer {
                 frame_window,
                 input.max_total_frames,
             )
-            .and_then(|value| typed_output::<PathsOutput>(tag_alias(value, &loaded.alias)))
+            .map(|value| tag_alias(value, &loaded.alias))
         })
         .await
     }
@@ -220,12 +208,10 @@ impl ProfileServer {
                     input.limit,
                     input.name_regex.as_deref(),
                 )
-                .and_then(|value| {
-                    typed_output::<DiffOutput>(tag_diff_aliases(
-                        value,
-                        &baseline.alias,
-                        &candidate.alias,
-                    ))
+                .map(|mut value| {
+                    value.baseline.alias = baseline.alias;
+                    value.candidate.alias = candidate.alias;
+                    value
                 })
             },
         )

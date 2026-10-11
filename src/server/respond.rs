@@ -14,60 +14,41 @@ pub(crate) fn success(value: Value) -> CallToolResult {
     result.is_error = Some(false);
     bounded_result(result)
 }
-pub(crate) fn tag_alias(mut value: Value, alias: &str) -> Value {
-    if let Some(profile) = value.get_mut("profile").and_then(Value::as_object_mut) {
-        profile.insert("alias".into(), Value::String(alias.into()));
-    }
+pub(crate) fn tag_alias<T>(
+    mut value: crate::output::OutputEnvelope<T>,
+    alias: &str,
+) -> crate::output::OutputEnvelope<T> {
+    value.profile.alias = alias.into();
     value
 }
-pub(crate) fn tag_continuations(
-    mut value: Value,
+
+pub(crate) fn tag_tree(
+    mut value: crate::output::TreeOutput,
     alias: &str,
-    tool: super::inputs::ContinuationTool,
-) -> Value {
-    use super::inputs::ContinuationTool;
-    let fingerprint = value["profile"]["fingerprint"].clone();
-    let frame = value["data"]["frame"]["frame_id"].clone();
-    if let Some(rows) = value["data"]["continuations"].as_array_mut() {
-        for row in rows {
-            let cursor = match tool {
-                ContinuationTool::Tree => vec![row["node_id"].clone()],
-                ContinuationTool::Callers | ContinuationTool::Callees => {
-                    let mut cursor = vec![frame.clone()];
-                    cursor.extend(
-                        row["node_path"]
-                            .as_array()
-                            .expect("direction path")
-                            .iter()
-                            .cloned(),
-                    );
-                    cursor
-                }
-            };
-            let row = row.as_object_mut().expect("continuation row");
-            row.remove("profile_fingerprint");
-            row.remove("node_path");
-            row.insert(
-                "continuation".into(),
-                json!({
-                    "profile":alias, "fingerprint":fingerprint, "tool":tool, "cursor":cursor
-                }),
-            );
-        }
+) -> crate::output::TreeOutput {
+    value.profile.alias = alias.into();
+    for row in &mut value.data.continuations {
+        row.continuation.profile = alias.into();
     }
     value
 }
 
-pub(crate) fn tag_diff_aliases(mut value: Value, baseline: &str, candidate: &str) -> Value {
-    if let Some(profile) = value.get_mut("baseline").and_then(Value::as_object_mut) {
-        profile.insert("alias".into(), Value::String(baseline.into()));
-    }
-    if let Some(profile) = value.get_mut("candidate").and_then(Value::as_object_mut) {
-        profile.insert("alias".into(), Value::String(candidate.into()));
+pub(crate) fn tag_direction(
+    mut value: crate::output::DirectionOutput,
+    alias: &str,
+) -> crate::output::DirectionOutput {
+    value.profile.alias = alias.into();
+    for row in &mut value.data.continuations {
+        row.continuation.profile = alias.into();
     }
     value
 }
-pub(crate) fn tag_registry(mut value: Value, status: registry::RegistryStatus) -> Value {
+
+pub(crate) fn tag_registry(
+    mut value: crate::output::SummaryOutput,
+    status: registry::RegistryStatus,
+) -> crate::output::SummaryOutput {
+    use crate::output::{RegistryOutput, TruncationReason};
     const REGISTRY_PROFILE_LIMIT: usize = 100;
     let registry::RegistryStatus {
         registry_root,
@@ -89,30 +70,24 @@ pub(crate) fn tag_registry(mut value: Value, status: registry::RegistryStatus) -
         selected_profiles.insert(0, active_profile);
         selected_profiles.truncate(REGISTRY_PROFILE_LIMIT);
     }
-    let registry_value = json!({
-        "registry_root": registry_root.display().to_string(),
-        "active": active,
-        "profiles": selected_profiles,
-        "profile_count": available,
-    });
-    if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
-        data.insert("registry".into(), registry_value);
-    }
-    if available > REGISTRY_PROFILE_LIMIT
-        && let Some(root) = value.as_object_mut()
-    {
-        root.insert("truncated".into(), Value::Bool(true));
-        root.entry("truncation_reasons")
-            .or_insert_with(|| Value::Array(Vec::new()))
-            .as_array_mut()
-            .expect("query envelopes have a truncation_reasons array")
-            .push(json!({
-                "kind":"registry_profile_limit",
-                "limit":REGISTRY_PROFILE_LIMIT,
-                "returned":returned,
-                "available":available,
-                "omitted":available-returned,
-            }));
+    value.data.registry = RegistryOutput {
+        registry_root: registry_root.display().to_string(),
+        active,
+        profiles: selected_profiles,
+        profile_count: available,
+    };
+    if available > REGISTRY_PROFILE_LIMIT {
+        value.truncated = true;
+        value.truncation_reasons.push(TruncationReason {
+            kind: "registry_profile_limit".into(),
+            details: [
+                ("limit".into(), json!(REGISTRY_PROFILE_LIMIT)),
+                ("returned".into(), json!(returned)),
+                ("available".into(), json!(available)),
+                ("omitted".into(), json!(available - returned)),
+            ]
+            .into(),
+        });
     }
     value
 }
@@ -233,31 +208,13 @@ pub(crate) fn failure(error: ApiError) -> CallToolResult {
     result.is_error = Some(true);
     bounded_result(result)
 }
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+#[cfg(test)]
+use crate::output::MAX_RESPONSE_BYTES;
+use crate::output::{ResponseBudget, response_too_large};
 
-// Count encoded bytes without allocating a second copy of the response.
-struct ByteBudget(usize);
-impl std::io::Write for ByteBudget {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_sub(bytes.len())
-            .ok_or_else(|| std::io::Error::other("response byte limit exceeded"))?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-// shortcut: bounds encoded output, not query allocations; budget construction if peak memory becomes a problem.
 fn bounded_result(result: CallToolResult) -> CallToolResult {
-    if serde_json::to_writer(ByteBudget(MAX_RESPONSE_BYTES), &result).is_err() {
-        return failure(ApiError::new(
-            "query_too_large",
-            "Tool response exceeds its byte limit",
-            json!({"resource":"response_bytes", "limit_bytes":MAX_RESPONSE_BYTES}),
-            "Reduce limit, max_nodes, max_depth, max_total_frames, or the path window; narrow symbol filters. If one identity is too large, use a profile with shorter symbols.",
-        ));
+    if serde_json::to_writer(ResponseBudget::new(), &result).is_err() {
+        return failure(response_too_large());
     }
     result
 }
@@ -286,7 +243,7 @@ mod text_tests {
     #[test]
     fn count_encoded_response_bytes() {
         use std::io::Write;
-        let mut budget = ByteBudget(3);
+        let mut budget = ResponseBudget(3);
         assert_eq!(budget.write(b"abc").unwrap(), 3);
         assert!(budget.write(b"d").is_err());
         let result = success(json!({"data":"\u{0000}".repeat(MAX_RESPONSE_BYTES / 2)}));
@@ -337,13 +294,24 @@ mod text_tests {
             })
             .collect();
         let value = tag_registry(
-            json!({"truncated":false,"truncation_reasons":[],"data":{}}),
+            crate::query::typed::summary(
+                &crate::profile::ProfileBuilder::new(crate::profile::BuildLimits::default())
+                    .from_reader(
+                        std::io::Cursor::new(b"root;leaf 1\n"),
+                        "/summary.folded".into(),
+                        12,
+                        None,
+                    )
+                    .unwrap(),
+            )
+            .unwrap(),
             registry::RegistryStatus {
                 registry_root: std::path::PathBuf::from(".prof-mcp"),
                 active: "p100".into(),
                 profiles,
             },
         );
+        let value = serde_json::to_value(value).unwrap();
         assert_eq!(value["data"]["registry"]["active"], "p100");
         assert_eq!(value["data"]["registry"]["profile_count"], 101);
         assert_eq!(

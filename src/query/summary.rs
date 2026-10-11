@@ -1,39 +1,45 @@
 //! Workspace-level orientation: totals, shape, and hot frames.
 
-use serde_json::{Value, json};
+use crate::error::ApiError;
+use crate::output::{
+    RecursionRow, RegistryOutput, ResponseBudget, StackConcentration, SummaryData, SummaryOutput,
+};
 
 use super::{Profile, envelope, frame_row, frame_row_with_percent_weight, percent};
 
-pub fn summary(profile: &Profile) -> Value {
+pub(crate) fn summary(profile: &Profile) -> Result<SummaryOutput, ApiError> {
+    let mut bytes = ResponseBudget::new();
     let top_self: Vec<_> = profile
         .top_self
         .iter()
         .take(5)
         .map(|id| {
-            frame_row_with_percent_weight(
+            bytes.row_name(profile.frame_name(*id))?;
+            Ok(frame_row_with_percent_weight(
                 profile,
                 *id,
                 &profile.frame_stats[*id as usize],
                 profile.total_weight,
                 profile.frame_stats[*id as usize].self_weight,
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, ApiError>>()?;
     let top_inclusive: Vec<_> = profile
         .top_inclusive
         .iter()
         .take(5)
         .map(|id| {
-            frame_row(
+            bytes.row_name(profile.frame_name(*id))?;
+            Ok(frame_row(
                 profile,
                 *id,
                 &profile.frame_stats[*id as usize],
                 profile.total_weight,
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, ApiError>>()?;
     let stack_concentration = stack_concentration(profile);
-    let recursion = recursion_report(profile);
+    let recursion = recursion_report(profile, &mut bytes)?;
     let mut warnings =
         vec!["Weight unit is opaque; it is not assumed to be time or cycles.".into()];
     if !recursion.is_empty() {
@@ -41,48 +47,55 @@ pub fn summary(profile: &Profile) -> Value {
             "Recursive frames detected; exact-frame inclusive weights count each stack once. Context occurrences can overlap.".into(),
         );
     }
-    envelope(
+    Ok(envelope(
         profile,
         profile.total_weight,
         Vec::new(),
         warnings,
-        json!({
-            "total_weight":profile.total_weight,
-            "frame_count":profile.frames.len(),
-            "unique_stack_count":profile.stacks.len(),
-            "max_depth":profile.max_depth,
-            "stack_concentration":stack_concentration,
-            "recursion_detected":recursion,
-            "top_self":top_self,
-            "top_inclusive":top_inclusive
-        }),
-    )
+        SummaryData {
+            total_weight: profile.total_weight,
+            frame_count: profile.frames.len(),
+            unique_stack_count: profile.stacks.len(),
+            max_depth: profile.max_depth,
+            stack_concentration,
+            recursion_detected: recursion,
+            top_self,
+            top_inclusive,
+            registry: RegistryOutput {
+                registry_root: String::new(),
+                active: String::new(),
+                profile_count: 0,
+                profiles: Vec::new(),
+            },
+        },
+    ))
 }
 
 /// Weight share covered by the heaviest unique stacks.
-fn stack_concentration(profile: &Profile) -> Value {
-    json!({
-        "top_10_stacks_percent":percent(profile.heaviest_stack_weights[0], profile.total_weight),
-        "top_50_stacks_percent":percent(profile.heaviest_stack_weights[1], profile.total_weight),
-        "unique_stack_count":profile.stacks.len()
-    })
+fn stack_concentration(profile: &Profile) -> StackConcentration {
+    StackConcentration {
+        top_10_stacks_percent: percent(profile.heaviest_stack_weights[0], profile.total_weight),
+        top_50_stacks_percent: percent(profile.heaviest_stack_weights[1], profile.total_weight),
+        unique_stack_count: profile.stacks.len(),
+    }
 }
 
 /// Frames that occur more than once within a single contributing stack.
-fn recursion_report(profile: &Profile) -> Vec<Value> {
+fn recursion_report(
+    profile: &Profile,
+    bytes: &mut ResponseBudget,
+) -> Result<Vec<RecursionRow>, ApiError> {
     profile
         .recursive_frames
         .iter()
         .map(|row| {
-            let frame_id = row.frame;
-            let max_occurrences_per_stack = row.max_occurrences;
-            let affected_weight = row.affected_weight;
-            json!({
-                "frame_id":frame_id,
-                "name":profile.frame_name(frame_id),
-                "max_occurrences_per_stack":max_occurrences_per_stack,
-                "affected_weight":affected_weight,
-                "affected_weight_percent":percent(affected_weight,profile.total_weight)
+            bytes.row_name(profile.frame_name(row.frame))?;
+            Ok(RecursionRow {
+                frame_id: row.frame,
+                name: profile.frame_name(row.frame).to_owned(),
+                max_occurrences_per_stack: row.max_occurrences as usize,
+                affected_weight: row.affected_weight,
+                affected_weight_percent: percent(row.affected_weight, profile.total_weight),
             })
         })
         .collect()

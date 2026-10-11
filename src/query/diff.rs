@@ -1,23 +1,15 @@
-use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::output::{SCHEMA_VERSION, percent, profile_meta};
+use crate::output::{
+    DiffData, DiffOutput, DiffRow, DiffScopeWeight, ResponseBudget, SCHEMA_VERSION, output_profile,
+    percent,
+};
 
 use super::{
     ApiError, DiffSort, Profile, TopSort, check_limit, compile_regex, metric_weight,
     row_limit_reason,
 };
-
-#[derive(serde::Serialize)]
-struct DiffRow<'a> {
-    name: &'a str,
-    baseline_weight: u64,
-    candidate_weight: u64,
-    baseline_percent: f64,
-    candidate_percent: f64,
-    delta_pp: f64,
-}
 
 struct Candidate<'a> {
     name: &'a str,
@@ -27,14 +19,14 @@ struct Candidate<'a> {
     name_rank: usize,
 }
 
-pub fn diff(
+pub(crate) fn diff(
     baseline: &Profile,
     candidate: &Profile,
     metric: TopSort,
     sort: DiffSort,
     limit: usize,
     name_regex: Option<&str>,
-) -> Result<Value, ApiError> {
+) -> Result<DiffOutput, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
     let regex = name_regex.map(compile_regex).transpose()?;
     let mut baseline_ids = baseline.frames.name_order.iter().copied().peekable();
@@ -89,23 +81,55 @@ pub fn diff(
     }
     let mut rows: Vec<_> = rows.into_iter().map(|row| row.row).collect();
     rows.sort_unstable_by(|a, b| candidate_order(a, b, sort));
+    let mut bytes = ResponseBudget::new();
     let rows: Vec<_> = rows
         .into_iter()
-        .map(|row| DiffRow {
-            name: row.name,
-            baseline_weight: row.baseline_weight,
-            candidate_weight: row.candidate_weight,
-            baseline_percent: percent(row.baseline_weight, baseline.total_weight),
-            candidate_percent: percent(row.candidate_weight, candidate.total_weight),
-            delta_pp: row.delta_pp,
+        .map(|row| {
+            bytes.row_name(row.name)?;
+            Ok(DiffRow {
+                name: row.name.to_owned(),
+                baseline_weight: row.baseline_weight,
+                candidate_weight: row.candidate_weight,
+                baseline_percent: percent(row.baseline_weight, baseline.total_weight),
+                candidate_percent: percent(row.candidate_weight, candidate.total_weight),
+                delta_pp: row.delta_pp,
+            })
         })
-        .collect();
+        .collect::<Result<_, ApiError>>()?;
     let truncation_reasons = row_limit_reason(limit, available);
-    let warnings =
-        vec!["Percentage-point changes do not prove causality or statistical significance."];
-    Ok(
-        json!({"schema_version":SCHEMA_VERSION,"baseline":profile_meta(baseline),"candidate":profile_meta(candidate),"scope_weight":{"baseline":baseline.total_weight,"candidate":candidate.total_weight},"truncated":!truncation_reasons.is_empty(),"truncation_reasons":truncation_reasons,"warnings":warnings,"data":{"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"sort":match sort {DiffSort::Regression=>"regression",DiffSort::Improvement=>"improvement",DiffSort::Absolute=>"absolute"},"rows":rows}}),
-    )
+    let output = super::envelope(
+        candidate,
+        candidate.total_weight,
+        truncation_reasons,
+        vec!["Percentage-point changes do not prove causality or statistical significance.".into()],
+        DiffData {
+            metric: match metric {
+                TopSort::SelfWeight => "self",
+                TopSort::Inclusive => "inclusive",
+            }
+            .into(),
+            sort: match sort {
+                DiffSort::Regression => "regression",
+                DiffSort::Improvement => "improvement",
+                DiffSort::Absolute => "absolute",
+            }
+            .into(),
+            rows,
+        },
+    );
+    Ok(DiffOutput {
+        schema_version: SCHEMA_VERSION.into(),
+        baseline: output_profile(baseline),
+        candidate: output.profile,
+        scope_weight: DiffScopeWeight {
+            baseline: baseline.total_weight,
+            candidate: candidate.total_weight,
+        },
+        truncated: output.truncated,
+        truncation_reasons: output.truncation_reasons,
+        warnings: output.warnings,
+        data: output.data,
+    })
 }
 
 struct HeapCandidate<'a> {

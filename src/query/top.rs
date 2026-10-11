@@ -1,31 +1,20 @@
 //! Self/inclusive ranking of exact folded-frame identities.
 
+use crate::output::{FrameRow, ResponseBudget, TopData, TopOutput};
 use hashbrown::HashMap;
-use serde_json::{Value, json};
 
 use super::{
     ApiError, FrameSelector, FrameStats, Profile, TopSort, check_limit, compile_regex, envelope,
     frame_order_stats, metric_weight, resolve_selector, row_limit_reason,
 };
 
-#[derive(serde::Serialize)]
-struct TopRow<'a> {
-    frame_id: u32,
-    name: &'a str,
-    self_weight: u64,
-    inclusive_weight: u64,
-    stack_count: u32,
-    profile_percent: f64,
-    scope_percent: f64,
-}
-
-pub fn top(
+pub(crate) fn top(
     profile: &Profile,
     metric: TopSort,
     limit: usize,
     frame: Option<&FrameSelector>,
     name_regex: Option<&str>,
-) -> Result<Value, ApiError> {
+) -> Result<TopOutput, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
     let frame_id = frame
         .map(|selector| resolve_selector(profile, selector))
@@ -106,28 +95,38 @@ pub fn top(
         (ids, available)
     };
     let truncation_reasons = row_limit_reason(limit, available);
+    let mut bytes = ResponseBudget::new();
     let rows: Vec<_> = ids
         .iter()
         .map(|id| {
             let stats = stats_for(*id);
             let weight = metric_weight(stats, metric);
-            TopRow {
+            bytes.row_name(profile.frame_name(*id))?;
+            Ok(FrameRow {
                 frame_id: *id,
-                name: profile.frame_name(*id),
+                name: profile.frame_name(*id).to_owned(),
                 self_weight: stats.self_weight,
                 inclusive_weight: stats.inclusive_weight,
                 stack_count: stats.stack_count,
                 profile_percent: crate::output::percent(weight, profile.total_weight),
                 scope_percent: crate::output::percent(weight, scope_weight),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, ApiError>>()?;
     Ok(envelope(
         profile,
         scope_weight,
         truncation_reasons,
         Vec::new(),
-        json!({"metric":match metric {TopSort::SelfWeight=>"self",TopSort::Inclusive=>"inclusive"},"frame":frame_id,"rows":rows}),
+        TopData {
+            metric: match metric {
+                TopSort::SelfWeight => "self",
+                TopSort::Inclusive => "inclusive",
+            }
+            .into(),
+            frame: frame_id,
+            rows,
+        },
     ))
 }
 

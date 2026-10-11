@@ -375,3 +375,25 @@ fn uncropped_path_rows() {
     assert_eq!(row["frame_start"], 0);
     assert_eq!(row["frame_end"], row["total_depth"]);
 }
+
+#[test]
+fn path_construction_rejects_encoded_names_before_returning_json() {
+    let name = "\\\"".repeat(20_000);
+    assert!(name.len() < 65536);
+    let profile = support::profile(&format!("root;{name} 1\n"));
+    let selector = FrameSelector {
+        frame_name: Some("root".into()),
+        frame_id: None,
+    };
+    let error = query::paths(&profile, &selector, 1).unwrap_err();
+    assert_eq!(error.code, "query_too_large");
+    assert_eq!(error.details["resource"], "response_bytes");
+    let cropped =
+        query::paths_with_window(&profile, &selector, 1, Some(FrameWindow::Head { lines: 1 }))
+            .unwrap();
+    assert_eq!(
+        cropped["data"]["paths"][0]["frames"],
+        serde_json::json!(["root"])
+    );
+    assert_eq!(cropped["data"]["paths"][0]["weight"], 1);
+}

@@ -4,6 +4,13 @@ use serde_json::{Value, json};
 
 use crate::profile::{FrameId, FrameStats, Profile};
 
+mod budget;
+mod types;
+#[cfg(test)]
+pub(crate) use budget::MAX_RESPONSE_BYTES;
+pub(crate) use budget::{ResponseBudget, response_too_large};
+pub(crate) use types::*;
+
 pub const SCHEMA_VERSION: &str = "2";
 
 pub fn percent(weight: u64, scope: u64) -> f64 {
@@ -21,22 +28,47 @@ pub fn profile_meta(profile: &Profile) -> Value {
     })
 }
 
-pub fn envelope(
+pub(crate) fn typed_envelope<T>(
     profile: &Profile,
     scope_weight: u64,
     truncation_reasons: Vec<Value>,
     warnings: Vec<String>,
-    data: Value,
-) -> Value {
-    json!({
-        "schema_version":SCHEMA_VERSION,
-        "profile":profile_meta(profile),
-        "scope_weight":scope_weight,
-        "truncated":!truncation_reasons.is_empty(),
-        "truncation_reasons":truncation_reasons,
-        "warnings":warnings,
-        "data":data
-    })
+    data: T,
+) -> OutputEnvelope<T> {
+    OutputEnvelope {
+        schema_version: SCHEMA_VERSION.into(),
+        profile: output_profile(profile),
+        scope_weight,
+        truncated: !truncation_reasons.is_empty(),
+        truncation_reasons: truncation_reasons
+            .into_iter()
+            .map(|reason| {
+                let Value::Object(mut details) = reason else {
+                    unreachable!("static truncation reason")
+                };
+                let Value::String(kind) = details.remove("kind").expect("reason kind") else {
+                    unreachable!("static kind")
+                };
+                TruncationReason {
+                    kind,
+                    details: details.into_iter().collect(),
+                }
+            })
+            .collect(),
+        warnings,
+        data,
+    }
+}
+
+pub(crate) fn output_profile(profile: &Profile) -> OutputProfile {
+    OutputProfile {
+        fingerprint: profile.source.fingerprint.clone(),
+        alias: String::new(),
+        weight_semantics: WeightSemantics {
+            unit: "opaque".into(),
+            basis: "folded_input".into(),
+        },
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

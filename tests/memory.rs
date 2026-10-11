@@ -28,7 +28,6 @@ fn breakdown_counts_arrays_and_spare_capacity() {
 
     profile.frame_stats.reserve(100);
     profile.source.fingerprint.reserve(100);
-    profile.source.canonical_path.reserve(100);
     let after = profile.memory_breakdown();
     assert_eq!(
         after.frame_stats_bytes,
@@ -36,9 +35,7 @@ fn breakdown_counts_arrays_and_spare_capacity() {
     );
     assert_eq!(
         after.metadata_bytes,
-        std::mem::size_of::<Profile>()
-            + profile.source.canonical_path.capacity()
-            + profile.source.fingerprint.capacity()
+        std::mem::size_of::<Profile>() + profile.source.fingerprint.capacity()
     );
     assert_eq!(
         after.total_bytes - before.total_bytes,
@@ -62,4 +59,22 @@ fn empty_profile_still_counts_root_and_sentinels() {
         bytes.total_bytes,
         bytes.metadata_bytes + 20 + bytes.cct_nodes_bytes
     );
+}
+
+#[test]
+fn snapshots_and_large_tables_cannot_be_cloned() {
+    use prof_mcp::profile::{ContextCallTree, FrameTable, PostingTable, StackTable};
+    trait AmbiguousIfClone<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    struct CloneMarker;
+    impl<T: Clone> AmbiguousIfClone<CloneMarker> for T {}
+    // Type inference becomes ambiguous if one of these types implements Clone.
+    let _ = <Profile as AmbiguousIfClone<_>>::check;
+    let _ = <FrameTable as AmbiguousIfClone<_>>::check;
+    let _ = <StackTable as AmbiguousIfClone<_>>::check;
+    let _ = <PostingTable as AmbiguousIfClone<_>>::check;
+    let _ = <ContextCallTree as AmbiguousIfClone<_>>::check;
+    let _ = <std::sync::Arc<Profile> as Clone>::clone;
 }

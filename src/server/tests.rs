@@ -74,6 +74,22 @@ async fn query_worker() {
                 .await
         });
         ready.await.unwrap();
+        let waiting_server = server.clone();
+        let (loading, mut loaded) = tokio::sync::oneshot::channel();
+        let (queued, waiting_ready) = tokio::sync::oneshot::channel();
+        let waiting = tokio::spawn(async move {
+            queued.send(()).unwrap();
+            waiting_server
+                .query(
+                    async move {
+                        loading.send(()).unwrap();
+                        Ok(())
+                    },
+                    |()| Ok(json!({})),
+                )
+                .await
+        });
+        waiting_ready.await.unwrap();
         client
             .peer()
             .send_request(rmcp::model::ClientRequest::PingRequest(
@@ -84,7 +100,13 @@ async fn query_worker() {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         assert_eq!(server.query_gate.available_permits(), 0);
+        assert!(matches!(
+            loaded.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
         release.send(()).unwrap();
+        loaded.await.unwrap();
+        assert_ne!(waiting.await.unwrap().is_error, Some(true));
         let _permit = server.query_gate.acquire().await.unwrap();
         client.cancel().await.unwrap();
         server_task.await.unwrap().unwrap();

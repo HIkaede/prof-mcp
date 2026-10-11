@@ -9,7 +9,9 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use crate::error::ApiError;
-pub(crate) use crate::output::{envelope, frame_row, frame_row_with_percent_weight, percent};
+pub(crate) use crate::output::{
+    frame_row, frame_row_with_percent_weight, percent, typed_envelope as envelope,
+};
 pub(crate) use crate::profile::{FrameId, FrameStats, NodeId, Profile};
 
 mod diff;
@@ -20,13 +22,18 @@ mod symbols;
 mod top;
 mod tree;
 
-pub use diff::diff;
-pub use direction::{callees, callers};
-pub use paths::{paths, paths_with_window, paths_with_window_budget};
-pub use summary::summary;
-pub use symbols::find_symbols;
-pub use top::top;
-pub use tree::tree;
+mod legacy;
+pub use legacy::*;
+
+pub(crate) mod typed {
+    pub(crate) use super::diff::diff;
+    pub(crate) use super::direction::{callees, callers};
+    pub(crate) use super::paths::paths_with_window_budget;
+    pub(crate) use super::summary::summary;
+    pub(crate) use super::symbols::find_symbols;
+    pub(crate) use super::top::top;
+    pub(crate) use super::tree::tree;
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct FrameSelector {
@@ -202,18 +209,19 @@ pub(crate) fn metric_weight(stats: &FrameStats, sort: TopSort) -> u64 {
     }
 }
 
-pub(crate) struct RenderState<'a> {
+pub(crate) struct RenderState<'a, C> {
     pub(crate) scope: u64,
     pub(crate) max_depth: usize,
     pub(crate) min_percent: f64,
     pub(crate) budget: &'a mut usize,
     pub(crate) reason_stats: &'a mut BTreeMap<&'static str, TruncationStats>,
-    pub(crate) continuations: &'a mut Vec<Value>,
+    pub(crate) continuations: &'a mut Vec<C>,
     pub(crate) continuation_count: &'a mut usize,
     pub(crate) continuation_limit: usize,
     /// Frame-id path from the rendered root; maintained by [`render_temp`]
     /// so omitted direction subtrees can be addressed by later requests.
     pub(crate) frame_path: Vec<FrameId>,
+    pub(crate) bytes: crate::output::ResponseBudget,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -222,7 +230,7 @@ pub(crate) struct TruncationStats {
     pub(crate) weight: u64,
 }
 
-impl RenderState<'_> {
+impl<C> RenderState<'_, C> {
     pub(crate) fn note_truncation(&mut self, reason: &'static str, weight: u64) {
         let stats = self.reason_stats.entry(reason).or_default();
         stats.count = stats.count.saturating_add(1);

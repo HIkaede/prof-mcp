@@ -54,3 +54,13 @@ fn tree_pruning_and_continuations() {
     let repeat = query::tree(&profile, 0, None, 4, 2, 0.0).unwrap();
     assert_eq!(tree, repeat);
 }
+
+#[test]
+fn tree_construction_bounds_long_names_in_nodes_and_continuations() {
+    let profile = support::profile(&format!("{} 1\n", "多".repeat(24_000)));
+    for depth in [0, 1] {
+        let error = query::tree(&profile, 0, None, depth, 2, 0.0).unwrap_err();
+        assert_eq!(error.code, "query_too_large");
+        assert_eq!(error.details["resource"], "response_bytes");
+    }
+}
