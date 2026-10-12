@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::UNIX_EPOCH};
+use std::{num::NonZeroUsize, os::unix::fs::MetadataExt, path::PathBuf, sync::Arc};
 
 use lru::LruCache;
 use tokio::sync::Mutex;
@@ -26,8 +26,7 @@ pub struct ProfileCache {
 
 #[derive(Clone)]
 struct CacheEntry {
-    byte_len: u64,
-    modified_unix_ms: Option<u64>,
+    metadata: std::fs::Metadata,
     estimated_bytes: usize,
     profile: Arc<Profile>,
 }
@@ -57,17 +56,24 @@ impl ProfileCache {
     }
 
     pub async fn load(&self, alias: Option<&str>) -> Result<LoadedProfile, ApiError> {
-        let resolved = registry::resolve(&self.workspace, alias)?;
-        let metadata = std::fs::metadata(&resolved.path).map_err(|source| {
+        self.load_resolved(registry::resolve(&self.workspace, alias)?)
+            .await
+    }
+
+    pub(crate) async fn load_resolved(
+        &self,
+        resolved: registry::ResolvedProfile,
+    ) -> Result<LoadedProfile, ApiError> {
+        let metadata = std::fs::symlink_metadata(&resolved.path).map_err(|source| {
             ApiError::from(ProfileError::Io {
                 path: resolved.path.clone(),
                 source,
             })
         })?;
-        if !metadata.file_type().is_file() {
+        if !metadata.file_type().is_file() || metadata.len() != resolved.byte_len {
             return Err(ApiError::new(
                 "registry_corrupt",
-                "Registered profile is not a regular file",
+                "Registered profile does not match its manifest entry",
                 serde_json::json!({"path":resolved.path.display().to_string()}),
                 "Re-register the profile in this workspace.",
             ));
@@ -80,16 +86,11 @@ impl ProfileCache {
                 "Raise --max-file-size-mib or re-register a smaller profile.",
             ));
         }
-        let modified_unix_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
-        if let Some(profile) = self.cached(&resolved, modified_unix_ms).await {
+        if let Some(profile) = self.cached(&resolved, &metadata).await {
             return Ok(profile);
         }
         let loading = self.loading.clone().lock_owned().await;
-        if let Some(profile) = self.cached(&resolved, modified_unix_ms).await {
+        if let Some(profile) = self.cached(&resolved, &metadata).await {
             return Ok(profile);
         }
         let entries = self.entries.clone();
@@ -102,7 +103,7 @@ impl ProfileCache {
                 max_file_bytes: max_file_size,
                 ..BuildLimits::default()
             })
-            .from_file(resolved.path.clone(), metadata.len(), modified_unix_ms)
+            .from_file(resolved.path.clone())
             .map_err(ApiError::from)?;
             if profile.source.fingerprint != resolved.fingerprint {
                 return Err(ApiError::new(
@@ -127,8 +128,7 @@ impl ProfileCache {
                     entries.put(
                         resolved.path,
                         CacheEntry {
-                            byte_len: resolved.byte_len,
-                            modified_unix_ms,
+                            metadata,
                             estimated_bytes,
                             profile: profile.clone(),
                         },
@@ -147,14 +147,20 @@ impl ProfileCache {
     async fn cached(
         &self,
         resolved: &registry::ResolvedProfile,
-        modified_unix_ms: Option<u64>,
+        metadata: &std::fs::Metadata,
     ) -> Option<LoadedProfile> {
         self.entries
             .lock()
             .await
             .get(&resolved.path)
             .filter(|entry| {
-                entry.byte_len == resolved.byte_len && entry.modified_unix_ms == modified_unix_ms
+                entry.metadata.len() == metadata.len()
+                    && entry.metadata.dev() == metadata.dev()
+                    && entry.metadata.ino() == metadata.ino()
+                    && entry.metadata.mtime() == metadata.mtime()
+                    && entry.metadata.mtime_nsec() == metadata.mtime_nsec()
+                    && entry.metadata.ctime() == metadata.ctime()
+                    && entry.metadata.ctime_nsec() == metadata.ctime_nsec()
             })
             .map(|entry| LoadedProfile {
                 alias: resolved.alias.clone(),
@@ -170,6 +176,26 @@ impl ProfileCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn summary_load_uses_one_registry_snapshot() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("input.folded");
+        std::fs::write(&source, "root;old 1\n").unwrap();
+        registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+        let (resolved, status) = registry::resolve_with_status(workspace.path(), None).unwrap();
+        std::fs::write(&source, "root;new 7\n").unwrap();
+        registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+        let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
+        let loaded = cache.load_resolved(resolved).await.unwrap();
+        assert_eq!(status.active, loaded.alias);
+        assert_eq!(
+            status.profiles[0].fingerprint,
+            loaded.profile.source.fingerprint
+        );
+        assert_eq!(loaded.profile.total_weight, 1);
+        assert_eq!(cache.load(None).await.unwrap().profile.total_weight, 7);
+    }
 
     #[tokio::test]
     async fn memory_budget() {

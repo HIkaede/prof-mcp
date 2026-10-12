@@ -5,19 +5,15 @@ use std::{io::Cursor, path::PathBuf};
 use prof_mcp::profile::{BuildLimits, ProfileBuilder};
 
 fn parse(input: &[u8]) -> Result<prof_mcp::profile::Profile, prof_mcp::error::ProfileError> {
-    ProfileBuilder::new(BuildLimits::default()).from_reader(
-        Cursor::new(input),
-        PathBuf::from("/fixture.folded"),
-        input.len() as u64,
-        None,
-    )
+    ProfileBuilder::new(BuildLimits::default())
+        .from_reader(Cursor::new(input), PathBuf::from("/fixture.folded"))
 }
 
 #[test]
 fn parse_folded_whitespace() {
     let profile = parse(b"\r\nroot;frame with spaces 3 \t\r\nroot;frame with spaces 7\n").unwrap();
-    assert_eq!(profile.total_weight, 10);
-    assert_eq!(profile.stacks.len(), 1);
+    assert_eq!(profile.total_weight(), 10);
+    assert_eq!(profile.stacks().len(), 1);
     assert_eq!(
         profile.frame_name(profile.frame_id("frame with spaces").unwrap()),
         "frame with spaces"
@@ -30,21 +26,24 @@ fn randomized_builder_hashing_preserves_frame_ids_and_stack_order() {
     let expected = parse(input).unwrap();
     for _ in 0..16 {
         let actual = parse(input).unwrap();
-        assert_eq!(actual.frames.name_text, expected.frames.name_text);
-        assert_eq!(actual.frames.name_offsets, expected.frames.name_offsets);
-        assert_eq!(actual.stacks.offsets, expected.stacks.offsets);
-        assert_eq!(actual.stacks.frames, expected.stacks.frames);
-        assert_eq!(actual.stacks.weights, expected.stacks.weights);
-        assert_eq!(actual.cct.child_offsets, expected.cct.child_offsets);
-        assert_eq!(actual.cct.children, expected.cct.children);
+        assert_eq!(actual.frames().name_text(), expected.frames().name_text());
+        assert_eq!(
+            actual.frames().name_offsets(),
+            expected.frames().name_offsets()
+        );
+        assert_eq!(actual.stacks().offsets(), expected.stacks().offsets());
+        assert_eq!(actual.stacks().frames(), expected.stacks().frames());
+        assert_eq!(actual.stacks().weights(), expected.stacks().weights());
+        assert_eq!(actual.cct().child_offsets(), expected.cct().child_offsets());
+        assert_eq!(actual.cct().child_ids(), expected.cct().child_ids());
     }
-    assert_eq!(&*expected.stacks.weights, &[7, 3, 7]);
+    assert_eq!(expected.stacks().weights(), &[3, 7, 7]);
 }
 
 #[test]
 fn trim_weight_delimiter() {
     let profile = parse(b"root;A  \t37\n").unwrap();
-    assert_eq!(profile.frame_id("A"), Some(1));
+    assert_eq!(profile.frame_id("A"), Some(0));
     let error = parse(b"root;   1\n").unwrap_err();
     assert_eq!(
         prof_mcp::error::ApiError::from(error).code,
@@ -75,7 +74,7 @@ fn parser_limits_and_fingerprint() {
         max_depth: 2,
         ..BuildLimits::default()
     })
-    .from_reader(Cursor::new(b"a;b;c 1\n"), PathBuf::from("/x"), 8, None)
+    .from_reader(Cursor::new(b"a;b;c 1\n"), PathBuf::from("/x"))
     .unwrap_err();
     assert_eq!(
         prof_mcp::error::ApiError::from(depth_error).code,
@@ -85,7 +84,7 @@ fn parser_limits_and_fingerprint() {
         max_line_bytes: 3,
         ..BuildLimits::default()
     })
-    .from_reader(Cursor::new(b"a 1\n"), PathBuf::from("/x"), 4, None)
+    .from_reader(Cursor::new(b"a 1\n"), PathBuf::from("/x"))
     .unwrap_err();
     assert_eq!(
         prof_mcp::error::ApiError::from(line_error).code,
@@ -95,7 +94,7 @@ fn parser_limits_and_fingerprint() {
         max_total_weight: 2,
         ..BuildLimits::default()
     })
-    .from_reader(Cursor::new(b"a 3\n"), PathBuf::from("/x"), 4, None)
+    .from_reader(Cursor::new(b"a 3\n"), PathBuf::from("/x"))
     .unwrap_err();
     assert_eq!(
         prof_mcp::error::ApiError::from(too_large_total).code,
@@ -105,19 +104,19 @@ fn parser_limits_and_fingerprint() {
         max_file_bytes: 3,
         ..BuildLimits::default()
     })
-    .from_reader(Cursor::new(b"a 1\n"), PathBuf::from("/x"), 3, None)
+    .from_reader(Cursor::new(b"a 1\n"), PathBuf::from("/x"))
     .unwrap_err();
     assert_eq!(
         prof_mcp::error::ApiError::from(streaming_size).code,
         "profile_too_large"
     );
     assert_eq!(
-        parse(b"a 1\n").unwrap().source.fingerprint,
-        parse(b"a 1\n").unwrap().source.fingerprint
+        parse(b"a 1\n").unwrap().fingerprint(),
+        parse(b"a 1\n").unwrap().fingerprint()
     );
     assert_ne!(
-        parse(b"a 1\n").unwrap().source.fingerprint,
-        parse(b"a 2\n").unwrap().source.fingerprint
+        parse(b"a 1\n").unwrap().fingerprint(),
+        parse(b"a 2\n").unwrap().fingerprint()
     );
 }
 
@@ -131,9 +130,9 @@ fn parse_unicode_frames() {
     ] {
         let input = format!("root;foo;{name}{delimiter}3\r\n");
         let profile = parse(input.as_bytes()).unwrap();
-        assert_eq!(profile.total_weight, 3);
+        assert_eq!(profile.total_weight(), 3);
         assert!(profile.frame_id(name).is_some(), "{name}");
-        assert_eq!(profile.stacks.stack(0).frames.len(), 3);
+        assert_eq!(profile.stacks().stack(0).frames.len(), 3);
     }
     for input in ["root;函数 nope\n", "root;函数 0\n"] {
         assert_eq!(
@@ -153,11 +152,11 @@ fn model_limits() {
         ..BuildLimits::default()
     };
     let profile = ProfileBuilder::new(limits)
-        .from_reader(Cursor::new(input), PathBuf::from("/x"), 0, None)
+        .from_reader(Cursor::new(input), PathBuf::from("/x"))
         .unwrap();
-    assert_eq!(profile.total_weight, 5);
-    assert_eq!(profile.stacks.len(), 1);
-    assert_eq!(profile.cct.nodes.len(), 3);
+    assert_eq!(profile.total_weight(), 5);
+    assert_eq!(profile.stacks().len(), 1);
+    assert_eq!(profile.cct().nodes().len(), 3);
     assert!(profile.estimated_size_bytes() > input.len());
 
     for (limits, resource) in [
@@ -184,7 +183,7 @@ fn model_limits() {
         ),
     ] {
         let error = ProfileBuilder::new(limits)
-            .from_reader(Cursor::new(input), PathBuf::from("/x"), 0, None)
+            .from_reader(Cursor::new(input), PathBuf::from("/x"))
             .unwrap_err();
         let error = prof_mcp::error::ApiError::from(error);
         assert_eq!(error.code, "profile_model_too_large");
@@ -192,5 +191,57 @@ fn model_limits() {
         assert!(
             error.details["actual"].as_u64().unwrap() > error.details["limit"].as_u64().unwrap()
         );
+    }
+}
+
+#[test]
+fn frozen_ids_are_canonical_across_input_order() {
+    let a = parse(b"zeta;root 2\nalpha;zeta 3\nalpha 5\n").unwrap();
+    let b = parse(b"alpha 5\nalpha;zeta 3\nzeta;root 2\n").unwrap();
+    assert_eq!(
+        a.frames().iter().collect::<Vec<_>>(),
+        ["alpha", "root", "zeta"]
+    );
+    assert_eq!(a.frames().name_text(), b.frames().name_text());
+    assert_eq!(a.stacks().frames(), b.stacks().frames());
+    assert_eq!(a.stacks().weights(), b.stacks().weights());
+    assert_eq!(a.postings().entries(), b.postings().entries());
+}
+
+#[test]
+fn configurable_depth_cannot_overflow_posting_positions() {
+    let limits = BuildLimits {
+        max_depth: 65537,
+        ..BuildLimits::default()
+    };
+    let build = |depth| {
+        let input = format!("{} 1\n", vec!["a"; depth].join(";"));
+        ProfileBuilder::new(limits).from_reader(Cursor::new(input.as_bytes()), PathBuf::from("/x"))
+    };
+    let profile = build(65536).unwrap();
+    assert_eq!(profile.postings().positions(0, 0), (0, u16::MAX));
+    assert_eq!(
+        prof_mcp::error::ApiError::from(build(65537).unwrap_err()).code,
+        "stack_too_deep"
+    );
+}
+
+#[test]
+fn posting_positions_compress_constants_and_compact_variable_ranges() {
+    let profile = parse(b"root;A;A;leaf 9\nroot;B;A;leaf 8\nroot;B;leaf 7\n").unwrap();
+    let postings = profile.postings();
+    assert_eq!(postings.position_offsets(), [0, 2, 2, 5, 5]);
+    assert_eq!(postings.constant_positions(), [0, 1 | (1 << 16), 0, 0]);
+    assert_eq!(postings.variable_positions().len(), 5);
+    let a = profile.frame_id("A").unwrap() as usize;
+    assert_eq!(postings.positions(a, 0), (1, 2));
+    assert_eq!(postings.positions(a, 1), (2, 2));
+    let leaf = profile.frame_id("leaf").unwrap() as usize;
+    assert_eq!(postings.positions(leaf, 0), (3, 3));
+    assert_eq!(postings.positions(leaf, 1), (3, 3));
+    assert_eq!(postings.positions(leaf, 2), (2, 2));
+    let root = profile.frame_id("root").unwrap() as usize;
+    for index in 0..postings[root].len() {
+        assert_eq!(postings.positions(root, index), (0, 0));
     }
 }

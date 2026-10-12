@@ -27,14 +27,9 @@ fuzz_target!(|input: &[u8]| {
         (Ok(()), Ok(())) => {
             assert!(output.len() as u64 <= limits.max_file_bytes);
             let parsed = ProfileBuilder::new(limits)
-                .from_reader(
-                    Cursor::new(&output),
-                    PathBuf::from("capture.folded"),
-                    output.len() as u64,
-                    None,
-                )
+                .from_reader(Cursor::new(&output), PathBuf::from("capture.folded"))
                 .unwrap();
-            assert!(parsed.total_weight <= limits.max_total_weight);
+            assert!(parsed.total_weight() <= limits.max_total_weight);
         }
         (Err(left), Err(right)) => {
             assert_eq!(left.to_string(), right.to_string());

@@ -7,7 +7,7 @@ use crate::output::{
 
 use super::{Profile, envelope, frame_row, frame_row_with_percent_weight, percent};
 
-pub(crate) fn summary(profile: &Profile) -> Result<SummaryOutput, ApiError> {
+pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> {
     let mut bytes = ResponseBudget::new();
     let top_self: Vec<_> = profile
         .top_self
@@ -40,11 +40,10 @@ pub(crate) fn summary(profile: &Profile) -> Result<SummaryOutput, ApiError> {
         .collect::<Result<_, ApiError>>()?;
     let stack_concentration = stack_concentration(profile);
     let recursion = recursion_report(profile, &mut bytes)?;
-    let mut warnings =
-        vec!["Weight unit is opaque; it is not assumed to be time or cycles.".into()];
+    let mut warnings = vec!["Weight unit is opaque; it is not assumed to be time or cycles."];
     if !recursion.is_empty() {
         warnings.push(
-            "Recursive frames detected; exact-frame inclusive weights count each stack once. Context occurrences can overlap.".into(),
+            "Recursive frames detected; exact-frame inclusive weights count each stack once. Context occurrences can overlap.",
         );
     }
     Ok(envelope(
@@ -81,10 +80,10 @@ fn stack_concentration(profile: &Profile) -> StackConcentration {
 }
 
 /// Frames that occur more than once within a single contributing stack.
-fn recursion_report(
-    profile: &Profile,
+fn recursion_report<'p>(
+    profile: &'p Profile,
     bytes: &mut ResponseBudget,
-) -> Result<Vec<RecursionRow>, ApiError> {
+) -> Result<Vec<RecursionRow<'p>>, ApiError> {
     profile
         .recursive_frames
         .iter()
@@ -92,7 +91,7 @@ fn recursion_report(
             bytes.row_name(profile.frame_name(row.frame))?;
             Ok(RecursionRow {
                 frame_id: row.frame,
-                name: profile.frame_name(row.frame).to_owned(),
+                name: profile.frame_name(row.frame),
                 max_occurrences_per_stack: row.max_occurrences as usize,
                 affected_weight: row.affected_weight,
                 affected_weight_percent: percent(row.affected_weight, profile.total_weight),

@@ -68,10 +68,10 @@ impl ProfileServer {
         self.cache.load(reference).await
     }
 
-    async fn query<T: Send + 'static, O: serde::Serialize + Send + 'static>(
+    async fn query<T: Send + 'static>(
         &self,
         load: impl std::future::Future<Output = Result<T, ApiError>> + Send,
-        run: impl FnOnce(T) -> Result<O, ApiError> + Send + 'static,
+        run: impl FnOnce(T) -> Result<serde_json::Value, ApiError> + Send + 'static,
     ) -> rmcp::model::CallToolResult {
         // Bound cold loading, computation, and response shaping as one heavy operation.
         let permit = match self.query_gate.clone().acquire_owned().await {
@@ -85,10 +85,7 @@ impl ProfileServer {
         tokio::task::spawn_blocking(move || {
             // Cancellation retains the permit until computation and response shaping finish.
             let _permit = permit;
-            match run(loaded).and_then(|output| {
-                serde_json::to_value(output)
-                    .map_err(|_| ApiError::internal("Could not serialize typed tool output"))
-            }) {
+            match run(loaded) {
                 Ok(value) => respond::success(value),
                 Err(error) => respond::failure(error),
             }

@@ -8,6 +8,11 @@ use serde_json::json;
 use crate::error::ApiError;
 use crate::registry;
 
+pub(crate) fn serialize(output: impl serde::Serialize) -> Result<Value, ApiError> {
+    serde_json::to_value(output)
+        .map_err(|_| ApiError::internal("Could not serialize typed tool output"))
+}
+
 pub(crate) fn success(value: Value) -> CallToolResult {
     let fallback = text_fallback(&value);
     let mut result = CallToolResult::default();
@@ -16,40 +21,40 @@ pub(crate) fn success(value: Value) -> CallToolResult {
     result.is_error = Some(false);
     bounded_result(result)
 }
-pub(crate) fn tag_alias<T>(
-    mut value: crate::output::OutputEnvelope<T>,
-    alias: &str,
-) -> crate::output::OutputEnvelope<T> {
-    value.profile.alias = alias.into();
+pub(crate) fn tag_alias<'a, T>(
+    mut value: crate::output::OutputEnvelope<'a, T>,
+    alias: &'a str,
+) -> crate::output::OutputEnvelope<'a, T> {
+    value.profile.alias = alias;
     value
 }
 
-pub(crate) fn tag_tree(
-    mut value: crate::output::TreeOutput,
-    alias: &str,
-) -> crate::output::TreeOutput {
-    value.profile.alias = alias.into();
+pub(crate) fn tag_tree<'a>(
+    mut value: crate::output::TreeOutput<'a>,
+    alias: &'a str,
+) -> crate::output::TreeOutput<'a> {
+    value.profile.alias = alias;
     for row in &mut value.data.continuations {
         row.continuation.profile = alias.into();
     }
     value
 }
 
-pub(crate) fn tag_direction(
-    mut value: crate::output::DirectionOutput,
-    alias: &str,
-) -> crate::output::DirectionOutput {
-    value.profile.alias = alias.into();
+pub(crate) fn tag_direction<'a>(
+    mut value: crate::output::DirectionOutput<'a>,
+    alias: &'a str,
+) -> crate::output::DirectionOutput<'a> {
+    value.profile.alias = alias;
     for row in &mut value.data.continuations {
         row.continuation.profile = alias.into();
     }
     value
 }
 
-pub(crate) fn tag_registry(
-    mut value: crate::output::SummaryOutput,
+pub(crate) fn tag_registry<'a>(
+    mut value: crate::output::SummaryOutput<'a>,
     status: registry::RegistryStatus,
-) -> crate::output::SummaryOutput {
+) -> crate::output::SummaryOutput<'a> {
     use crate::output::{RegistryOutput, TruncationReason};
     const REGISTRY_PROFILE_LIMIT: usize = 100;
     let registry::RegistryStatus {
@@ -295,18 +300,14 @@ mod text_tests {
                 byte_len: 1,
             })
             .collect();
-        let value = tag_registry(
-            crate::query::typed::summary(
-                &crate::profile::ProfileBuilder::new(crate::profile::BuildLimits::default())
-                    .from_reader(
-                        std::io::Cursor::new(b"root;leaf 1\n"),
-                        "/summary.folded".into(),
-                        12,
-                        None,
-                    )
-                    .unwrap(),
+        let profile = crate::profile::ProfileBuilder::new(crate::profile::BuildLimits::default())
+            .from_reader(
+                std::io::Cursor::new(b"root;leaf 1\n"),
+                "/summary.folded".into(),
             )
-            .unwrap(),
+            .unwrap();
+        let value = tag_registry(
+            crate::query::summary(&profile).unwrap(),
             registry::RegistryStatus {
                 registry_root: std::path::PathBuf::from(".prof-mcp"),
                 active: "p100".into(),

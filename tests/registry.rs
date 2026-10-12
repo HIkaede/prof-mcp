@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 
 use prof_mcp::registry::{self, Manifest};
@@ -573,13 +575,11 @@ fn reader_matches_file() {
     let builder = prof_mcp::profile::ProfileBuilder::new(Default::default());
     let parse = |root| {
         let resolved = registry::resolve(root, None).unwrap();
-        builder
-            .from_file(resolved.path, resolved.byte_len, None)
-            .unwrap()
+        builder.from_file(resolved.path).unwrap()
     };
     assert_eq!(
-        prof_mcp::query::summary(&parse(file_root.path())),
-        prof_mcp::query::summary(&parse(stream_root.path()))
+        support::json(prof_mcp::query::summary(&parse(file_root.path())).unwrap()),
+        support::json(prof_mcp::query::summary(&parse(stream_root.path())).unwrap())
     );
     for root in [file_root.path(), stream_root.path()] {
         let resolved = registry::resolve(root, None).unwrap();
@@ -786,10 +786,10 @@ fn register_with_bounded_memory() {
     let resolved = registry::resolve(root.path(), None).unwrap();
     assert_eq!(resolved.byte_len, 96 * 1024 * 1024);
     let parsed = prof_mcp::profile::ProfileBuilder::new(Default::default())
-        .from_file(resolved.path, resolved.byte_len, None)
+        .from_file(resolved.path)
         .unwrap();
-    assert_eq!(parsed.total_weight, 12288);
-    assert_eq!(parsed.stacks.len(), 1);
+    assert_eq!(parsed.total_weight(), 12288);
+    assert_eq!(parsed.stacks().len(), 1);
 }
 
 #[test]

@@ -12,9 +12,9 @@ use super::outputs::{
     DiffOutput, DirectionOutput, FindOutput, PathsOutput, SummaryOutput, TopOutput, TreeOutput,
     typed_output_schema,
 };
-use super::respond::{failure, tag_alias, tag_direction, tag_registry, tag_tree};
+use super::respond::{failure, serialize, tag_alias, tag_direction, tag_registry, tag_tree};
 use crate::error::ApiError;
-use crate::query::{FrameSelector, FrameWindow, typed as query};
+use crate::query::{self, FrameSelector, FrameWindow};
 use crate::registry;
 
 #[tool_router]
@@ -29,13 +29,19 @@ impl ProfileServer {
         Parameters(input): Parameters<ProfileInput>,
     ) -> CallToolResult {
         let workspace = self.cache.workspace().to_owned();
-        self.query(self.profile(input.profile.as_deref()), move |loaded| {
-            let status = registry::status(&workspace)?;
-            Ok(tag_registry(
-                tag_alias(query::summary(&loaded.profile)?, &loaded.alias),
-                status,
-            ))
-        })
+        self.query(
+            async {
+                let (resolved, status) =
+                    registry::resolve_with_status(&workspace, input.profile.as_deref())?;
+                Ok((self.cache.load_resolved(resolved).await?, status))
+            },
+            |(loaded, status)| {
+                serialize(tag_registry(
+                    tag_alias(query::summary(&loaded.profile)?, &loaded.alias),
+                    status,
+                ))
+            },
+        )
         .await
     }
     #[tool(description = "Find exact folded-frame identities by contains or regex.", output_schema = typed_output_schema::<FindOutput>())]
@@ -45,7 +51,7 @@ impl ProfileServer {
     ) -> CallToolResult {
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
             query::find_symbols(&loaded.profile, &input.query, input.mode, input.limit)
-                .map(|value| tag_alias(value, &loaded.alias))
+                .and_then(|value| serialize(tag_alias(value, &loaded.alias)))
         })
         .await
     }
@@ -63,7 +69,7 @@ impl ProfileServer {
                 frame.as_ref(),
                 input.name_regex.as_deref(),
             )
-            .map(|value| tag_alias(value, &loaded.alias))
+            .and_then(|value| serialize(tag_alias(value, &loaded.alias)))
         })
         .await
     }
@@ -95,7 +101,7 @@ impl ProfileServer {
                 input.max_nodes,
                 input.min_scope_percent,
             )
-            .map(|value| tag_tree(value, &loaded.alias))
+            .and_then(|value| serialize(tag_tree(value, &loaded.alias)))
         })
         .await
     }
@@ -160,7 +166,7 @@ impl ProfileServer {
                     .as_ref()
                     .map(|c| (&c.cursor[1..], c.fingerprint.as_str())),
             )
-            .map(|value| tag_direction(value, &loaded.alias))
+            .and_then(|value| serialize(tag_direction(value, &loaded.alias)))
         })
         .await
     }
@@ -179,7 +185,7 @@ impl ProfileServer {
                 frame_window,
                 input.max_total_frames,
             )
-            .map(|value| tag_alias(value, &loaded.alias))
+            .and_then(|value| serialize(tag_alias(value, &loaded.alias)))
         })
         .await
     }
@@ -203,10 +209,10 @@ impl ProfileServer {
                     input.limit,
                     input.name_regex.as_deref(),
                 )
-                .map(|mut value| {
-                    value.baseline.alias = baseline.alias;
-                    value.candidate.alias = candidate.alias;
-                    value
+                .and_then(|mut value| {
+                    value.baseline.alias = &baseline.alias;
+                    value.candidate.alias = &candidate.alias;
+                    serialize(value)
                 })
             },
         )

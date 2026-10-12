@@ -25,18 +25,13 @@ mod symbols;
 mod top;
 mod tree;
 
-mod legacy;
-pub use legacy::*;
-
-pub(crate) mod typed {
-    pub(crate) use super::diff::diff;
-    pub(crate) use super::direction::{callees, callers};
-    pub(crate) use super::paths::paths_with_window_budget;
-    pub(crate) use super::summary::summary;
-    pub(crate) use super::symbols::find_symbols;
-    pub(crate) use super::top::top;
-    pub(crate) use super::tree::tree;
-}
+pub use diff::diff;
+pub use direction::{callees, callers};
+pub use paths::paths_with_window_budget;
+pub use summary::summary;
+pub use symbols::find_symbols;
+pub use top::top;
+pub use tree::tree;
 
 #[derive(Clone, Debug, Default)]
 pub struct FrameSelector {
@@ -204,7 +199,6 @@ pub(crate) fn tree_reason_values(
 }
 
 pub(crate) fn frame_order_stats(
-    profile: &Profile,
     stats: &[FrameStats],
     a: FrameId,
     b: FrameId,
@@ -218,7 +212,6 @@ pub(crate) fn frame_order_stats(
                 .self_weight
                 .cmp(&stats[a as usize].self_weight)
         })
-        .then_with(|| profile.frame_name(a).cmp(profile.frame_name(b)))
         .then(a.cmp(&b))
 }
 pub(crate) fn metric_weight(stats: &FrameStats, sort: TopSort) -> u64 {
@@ -288,42 +281,19 @@ mod tests {
         use crate::profile::{BuildLimits, ProfileBuilder};
         let input = b"z 5\na 5\nb;leaf 5\n";
         let profile = ProfileBuilder::new(BuildLimits::default())
-            .from_reader(
-                std::io::Cursor::new(input),
-                "/ranking.folded".into(),
-                input.len() as u64,
-                None,
-            )
+            .from_reader(std::io::Cursor::new(input), "/ranking.folded".into())
             .unwrap();
         let id = |name| profile.frame_id(name).unwrap();
         assert_eq!(
-            frame_order_stats(
-                &profile,
-                &profile.frame_stats,
-                id("a"),
-                id("z"),
-                TopSort::SelfWeight
-            ),
+            frame_order_stats(&profile.frame_stats, id("a"), id("z"), TopSort::SelfWeight),
             Ordering::Less
         );
         assert_eq!(
-            frame_order_stats(
-                &profile,
-                &profile.frame_stats,
-                id("z"),
-                id("b"),
-                TopSort::Inclusive
-            ),
+            frame_order_stats(&profile.frame_stats, id("z"), id("b"), TopSort::Inclusive),
             Ordering::Less
         );
         assert_eq!(
-            frame_order_stats(
-                &profile,
-                &profile.frame_stats,
-                id("b"),
-                id("z"),
-                TopSort::Inclusive
-            ),
+            frame_order_stats(&profile.frame_stats, id("b"), id("z"), TopSort::Inclusive),
             Ordering::Greater
         );
     }

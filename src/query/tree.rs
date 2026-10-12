@@ -11,14 +11,14 @@ use super::{
     tree_reason_values,
 };
 
-pub(crate) fn tree(
-    profile: &Profile,
+pub fn tree<'p>(
+    profile: &'p Profile,
     root_node_id: NodeId,
     expected_fingerprint: Option<&str>,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
-) -> Result<TreeOutput, ApiError> {
+) -> Result<TreeOutput<'p>, ApiError> {
     check_budget(max_depth, max_nodes, min_scope_percent)?;
     if root_node_id != profile.cct.root {
         let expected = expected_fingerprint.ok_or_else(|| {
@@ -86,12 +86,12 @@ pub(crate) fn tree(
     ))
 }
 
-fn render_cct(
-    profile: &Profile,
+fn render_cct<'p>(
+    profile: &'p Profile,
     node_id: NodeId,
     depth: usize,
-    state: &mut RenderState<'_, TreeContinuation>,
-) -> Result<(TreeNode, bool), ApiError> {
+    state: &mut RenderState<'_, TreeContinuation<'p>>,
+) -> Result<(TreeNode<'p>, bool), ApiError> {
     *state.budget -= 1;
     let node = &profile.cct.nodes[node_id as usize];
     if let Some(id) = node.frame {
@@ -102,8 +102,10 @@ fn render_cct(
     let mut omitted_count = 0;
     let mut omitted_weight = 0;
     let mut truncated = false;
+    let mut self_weight = node.total_weight;
     for &child_id in children {
         let child = &profile.cct.nodes[child_id as usize];
+        self_weight -= child.total_weight;
         let reason = if depth >= state.max_depth {
             Some(TreeTruncation::DepthLimit)
         } else if percent(child.total_weight, state.scope) < state.min_percent {
@@ -126,7 +128,7 @@ fn render_cct(
                 state.continuations.push(TreeContinuation {
                     node_id: child_id,
                     frame_id,
-                    name: profile.frame_name(frame_id).to_owned(),
+                    name: profile.frame_name(frame_id),
                     reason,
                     continuation: Continuation {
                         profile: String::new(),
@@ -150,8 +152,8 @@ fn render_cct(
         TreeNode {
             node_id: Some(node_id),
             frame_id: node.frame,
-            name: name.map(str::to_owned),
-            self_weight: node.self_weight,
+            name,
+            self_weight,
             total_weight: node.total_weight,
             profile_percent: percent(node.total_weight, profile.total_weight),
             scope_percent: percent(node.total_weight, state.scope),

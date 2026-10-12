@@ -168,12 +168,7 @@ pub fn register_reader(
         max_file_bytes: max_file_size,
         ..BuildLimits::default()
     })
-    .from_reader(
-        BufReader::new(&mut spool),
-        PathBuf::from(source_name),
-        byte_len,
-        None,
-    )
+    .from_reader(BufReader::new(&mut spool), PathBuf::from(source_name))
     .map_err(ApiError::from)?;
     let fingerprint = parsed.source.fingerprint.clone();
     drop(parsed);
@@ -283,7 +278,7 @@ pub fn discover(workspace: &Path) -> Result<Option<PathBuf>, ApiError> {
     }
 }
 
-pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProfile, ApiError> {
+fn read_workspace_manifest(workspace: &Path) -> Result<(PathBuf, Manifest), ApiError> {
     let state = discover(workspace)?.ok_or_else(|| {
         ApiError::new(
             "workspace_not_registered",
@@ -294,6 +289,28 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
     })?;
     let manifest = read_manifest_required(&state)?;
     validate_manifest(&manifest)?;
+    Ok((state, manifest))
+}
+
+pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProfile, ApiError> {
+    let (state, manifest) = read_workspace_manifest(workspace)?;
+    resolve_manifest(&state, &manifest, requested)
+}
+
+pub(crate) fn resolve_with_status(
+    workspace: &Path,
+    requested: Option<&str>,
+) -> Result<(ResolvedProfile, RegistryStatus), ApiError> {
+    let (state, manifest) = read_workspace_manifest(workspace)?;
+    let resolved = resolve_manifest(&state, &manifest, requested)?;
+    Ok((resolved, status_manifest(state, manifest)))
+}
+
+fn resolve_manifest(
+    state: &Path,
+    manifest: &Manifest,
+    requested: Option<&str>,
+) -> Result<ResolvedProfile, ApiError> {
     let alias = requested.unwrap_or(&manifest.active);
     if !valid_alias(alias) {
         return Err(invalid_alias(alias));
@@ -302,11 +319,11 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
         ApiError::new(
             "profile_alias_not_found",
             format!("No registered profile alias: {alias}"),
-            alias_details(&manifest, alias),
+            alias_details(manifest, alias),
             "Register it with prof-mcp register PATH --name ALIAS, or use an existing alias.",
         )
     })?;
-    ensure_profiles_dir(&state, false)?;
+    ensure_profiles_dir(state, false)?;
     let file = profile_file(&entry.fingerprint);
     let path = state.join(&file);
     let metadata = fs::symlink_metadata(&path)
@@ -329,16 +346,11 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
 }
 
 pub fn status(workspace: &Path) -> Result<RegistryStatus, ApiError> {
-    let state = discover(workspace)?.ok_or_else(|| {
-        ApiError::new(
-            "workspace_not_registered",
-            "No .prof-mcp registry was found for this workspace",
-            json!({"cwd":path_text(workspace)}),
-            "Run prof-mcp register PATH from workspace root.",
-        )
-    })?;
-    let manifest = read_manifest_required(&state)?;
-    validate_manifest(&manifest)?;
+    let (state, manifest) = read_workspace_manifest(workspace)?;
+    Ok(status_manifest(state, manifest))
+}
+
+fn status_manifest(state: PathBuf, manifest: Manifest) -> RegistryStatus {
     let profiles = manifest
         .profiles
         .iter()
@@ -349,11 +361,11 @@ pub fn status(workspace: &Path) -> Result<RegistryStatus, ApiError> {
             byte_len: profile.byte_len,
         })
         .collect();
-    Ok(RegistryStatus {
+    RegistryStatus {
         registry_root: state,
         active: manifest.active,
         profiles,
-    })
+    }
 }
 
 pub fn set_active(workspace: &Path, alias: &str) -> Result<RegistryStatus, ApiError> {

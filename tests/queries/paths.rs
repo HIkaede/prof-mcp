@@ -19,7 +19,16 @@ fn path_selection_orders_weight_ties_by_full_unicode_names() {
         "根;é;é",
     ];
     for limit in [1, 2, 4, 7, 20] {
-        let result = query::paths(&profile, &selector, limit).unwrap();
+        let result = support::json(
+            prof_mcp::query::paths_with_window_budget(
+                &profile,
+                &selector,
+                limit,
+                None,
+                prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+            )
+            .unwrap(),
+        );
         let names: Vec<_> = result["data"]["paths"]
             .as_array()
             .unwrap()
@@ -44,15 +53,19 @@ fn path_selection_orders_weight_ties_by_full_unicode_names() {
 fn recursive_path_positions() {
     let profile = support::profile("root;foo;foo;bar 10\nroot;foo;z 5\n");
     let foo = support::frame(&profile, "foo");
-    let paths = query::paths(
-        &profile,
-        &FrameSelector {
-            frame_id: Some(foo),
-            frame_name: None,
-        },
-        1,
-    )
-    .unwrap();
+    let paths = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &FrameSelector {
+                frame_id: Some(foo),
+                frame_name: None,
+            },
+            1,
+            None,
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
     assert_eq!(paths["data"]["frame"], foo);
     assert!(paths["data"].get("through").is_none());
     assert!(paths["truncated"].as_bool().unwrap());
@@ -72,31 +85,49 @@ fn recursive_display_windows() {
         frame_id: Some(foo),
         frame_name: None,
     };
-    let full = query::paths(&profile, &selector, 10).unwrap();
-    let head = query::paths_with_window(
-        &profile,
-        &selector,
-        10,
-        Some(FrameWindow::Head { lines: 2 }),
-    )
-    .unwrap();
-    let tail = query::paths_with_window(
-        &profile,
-        &selector,
-        10,
-        Some(FrameWindow::Tail { lines: 2 }),
-    )
-    .unwrap();
-    let around = query::paths_with_window(
-        &profile,
-        &selector,
-        10,
-        Some(FrameWindow::AroundTarget {
-            before: 1,
-            after: 1,
-        }),
-    )
-    .unwrap();
+    let full = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &selector,
+            10,
+            None,
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
+    let head = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &selector,
+            10,
+            Some(FrameWindow::Head { lines: 2 }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
+    let tail = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &selector,
+            10,
+            Some(FrameWindow::Tail { lines: 2 }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
+    let around = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &selector,
+            10,
+            Some(FrameWindow::AroundTarget {
+                before: 1,
+                after: 1,
+            }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
     assert_eq!(head["scope_weight"], full["scope_weight"]);
     assert_eq!(
         head["data"]["paths"][0]["weight"],
@@ -137,14 +168,15 @@ fn recursive_display_windows() {
     assert_eq!(around["truncation_reasons"][0]["kind"], "frame_window");
     assert!(!full["truncated"].as_bool().unwrap());
     assert_eq!(
-        query::paths_with_window(
+        prof_mcp::query::paths_with_window_budget(
             &profile,
             &selector,
             10,
             Some(FrameWindow::AroundTarget {
                 before: 0,
                 after: 0
-            })
+            }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES
         )
         .unwrap_err()
         .code,
@@ -163,9 +195,15 @@ fn recursive_display_windows() {
         },
     ] {
         assert_eq!(
-            query::paths_with_window(&profile, &selector, 10, Some(window))
-                .unwrap_err()
-                .code,
+            prof_mcp::query::paths_with_window_budget(
+                &profile,
+                &selector,
+                10,
+                Some(window),
+                prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES
+            )
+            .unwrap_err()
+            .code,
             "invalid_budget"
         );
     }
@@ -179,7 +217,8 @@ fn path_frame_budget() {
         frame_id: Some(foo),
         frame_name: None,
     };
-    let bounded = query::paths_with_window_budget(&profile, &selector, 10, None, 5).unwrap();
+    let bounded =
+        support::json(query::paths_with_window_budget(&profile, &selector, 10, None, 5).unwrap());
     let paths = bounded["data"]["paths"].as_array().unwrap();
     assert_eq!(paths.len(), 1);
     assert_eq!(
@@ -212,7 +251,8 @@ fn path_frame_budget() {
         "total_frame_budget"
     );
 
-    let exact_row = query::paths_with_window_budget(&profile, &selector, 10, None, 7).unwrap();
+    let exact_row =
+        support::json(query::paths_with_window_budget(&profile, &selector, 10, None, 7).unwrap());
     assert_eq!(exact_row["data"]["paths"].as_array().unwrap().len(), 1);
     assert_eq!(
         exact_row["data"]["paths"][0]["frames"],
@@ -248,26 +288,30 @@ fn path_frame_budget() {
         );
     }
 
-    let head = query::paths_with_window_budget(
-        &profile,
-        &selector,
-        10,
-        Some(FrameWindow::Head { lines: 7 }),
-        3,
-    )
-    .unwrap();
+    let head = support::json(
+        query::paths_with_window_budget(
+            &profile,
+            &selector,
+            10,
+            Some(FrameWindow::Head { lines: 7 }),
+            3,
+        )
+        .unwrap(),
+    );
     assert_eq!(
         head["data"]["paths"][0]["frames"],
         serde_json::json!(["root", "a", "b"])
     );
-    let tail = query::paths_with_window_budget(
-        &profile,
-        &selector,
-        10,
-        Some(FrameWindow::Tail { lines: 7 }),
-        3,
-    )
-    .unwrap();
+    let tail = support::json(
+        query::paths_with_window_budget(
+            &profile,
+            &selector,
+            10,
+            Some(FrameWindow::Tail { lines: 7 }),
+            3,
+        )
+        .unwrap(),
+    );
     assert_eq!(
         tail["data"]["paths"][0]["frames"],
         serde_json::json!(["c", "d", "e"])
@@ -295,16 +339,19 @@ fn path_window_boundaries() {
         frame_id: Some(leaf),
         frame_name: None,
     };
-    let root_window = query::paths_with_window(
-        &profile,
-        &foo_selector,
-        10,
-        Some(FrameWindow::AroundTarget {
-            before: 5,
-            after: 1,
-        }),
-    )
-    .unwrap();
+    let root_window = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &foo_selector,
+            10,
+            Some(FrameWindow::AroundTarget {
+                before: 5,
+                after: 1,
+            }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
     let root_row = root_window["data"]["paths"]
         .as_array()
         .unwrap()
@@ -316,16 +363,19 @@ fn path_window_boundaries() {
     assert_eq!(root_row["omitted_before"], 0);
     assert_eq!(root_row["omitted_after"], 1);
 
-    let leaf_window = query::paths_with_window(
-        &profile,
-        &leaf_selector,
-        10,
-        Some(FrameWindow::AroundTarget {
-            before: 1,
-            after: 5,
-        }),
-    )
-    .unwrap();
+    let leaf_window = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &leaf_selector,
+            10,
+            Some(FrameWindow::AroundTarget {
+                before: 1,
+                after: 5,
+            }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
     let leaf_row = &leaf_window["data"]["paths"][0];
     assert_eq!(leaf_row["target_positions"], serde_json::json!([2]));
     assert_eq!(leaf_row["frame_start"], 1);
@@ -333,16 +383,30 @@ fn path_window_boundaries() {
     assert_eq!(leaf_row["omitted_before"], 1);
     assert_eq!(leaf_row["omitted_after"], 0);
 
-    let baseline = query::paths(&profile, &foo_selector, 2).unwrap();
-    let top_before = query::top(&profile, TopSort::SelfWeight, 20, None, None).unwrap();
-    let cropped = query::paths_with_window(
-        &profile,
-        &foo_selector,
-        2,
-        Some(FrameWindow::Head { lines: 1 }),
-    )
-    .unwrap();
-    let top_after = query::top(&profile, TopSort::SelfWeight, 20, None, None).unwrap();
+    let baseline = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &foo_selector,
+            2,
+            None,
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
+    let top_before =
+        support::json(query::top(&profile, TopSort::SelfWeight, 20, None, None).unwrap());
+    let cropped = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &foo_selector,
+            2,
+            Some(FrameWindow::Head { lines: 1 }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
+    let top_after =
+        support::json(query::top(&profile, TopSort::SelfWeight, 20, None, None).unwrap());
     assert_eq!(cropped["scope_weight"], baseline["scope_weight"]);
     assert_eq!(cropped["scope_weight"], 32);
     assert_eq!(
@@ -362,28 +426,30 @@ fn path_window_boundaries() {
         serde_json::json!([1])
     );
     assert_eq!(top_before, top_after);
-    assert_eq!(profile.frame_stats[foo as usize].inclusive_weight, 32);
+    assert_eq!(profile.frame_stats()[foo as usize].inclusive_weight, 32);
 }
 
 #[test]
 fn uncropped_path_rows() {
     let profile = support::profile("root;a;b;foo 10\n");
     let foo = support::frame(&profile, "foo");
-    let result = query::paths_with_window_budget(
-        &profile,
-        &FrameSelector {
-            frame_id: Some(foo),
-            frame_name: None,
-        },
-        5,
-        None,
-        500,
-    )
-    .unwrap();
+    let result = support::json(
+        query::paths_with_window_budget(
+            &profile,
+            &FrameSelector {
+                frame_id: Some(foo),
+                frame_name: None,
+            },
+            5,
+            None,
+            500,
+        )
+        .unwrap(),
+    );
     let row = &result["data"]["paths"][0];
-    assert!(row.get("omitted_before").is_none());
-    assert!(row.get("budget_omitted_before").is_none());
-    assert!(row.get("requested_frame_start").is_none());
+    assert_eq!(row["omitted_before"], 0);
+    assert_eq!(row["budget_omitted_before"], 0);
+    assert_eq!(row["requested_frame_start"], 0);
     assert_eq!(row["frame_start"], 0);
     assert_eq!(row["frame_end"], row["total_depth"]);
 }
@@ -397,12 +463,26 @@ fn path_construction_rejects_encoded_names_before_returning_json() {
         frame_name: Some("root".into()),
         frame_id: None,
     };
-    let error = query::paths(&profile, &selector, 1).unwrap_err();
+    let error = prof_mcp::query::paths_with_window_budget(
+        &profile,
+        &selector,
+        1,
+        None,
+        prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+    )
+    .unwrap_err();
     assert_eq!(error.code, "query_too_large");
     assert_eq!(error.details["resource"], "response_bytes");
-    let cropped =
-        query::paths_with_window(&profile, &selector, 1, Some(FrameWindow::Head { lines: 1 }))
-            .unwrap();
+    let cropped = support::json(
+        prof_mcp::query::paths_with_window_budget(
+            &profile,
+            &selector,
+            1,
+            Some(FrameWindow::Head { lines: 1 }),
+            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+        )
+        .unwrap(),
+    );
     assert_eq!(
         cropped["data"]["paths"][0]["frames"],
         serde_json::json!(["root"])
@@ -417,14 +497,16 @@ fn mixed_path_truncations_keep_flat_fields_and_reason_order() {
         frame_id: Some(support::frame(&profile, "foo")),
         frame_name: None,
     };
-    let paths = query::paths_with_window_budget(
-        &profile,
-        &selector,
-        2,
-        Some(FrameWindow::Head { lines: 2 }),
-        1,
-    )
-    .unwrap();
+    let paths = support::json(
+        query::paths_with_window_budget(
+            &profile,
+            &selector,
+            2,
+            Some(FrameWindow::Head { lines: 2 }),
+            1,
+        )
+        .unwrap(),
+    );
     assert_eq!(
         paths["truncation_reasons"],
         serde_json::json!([

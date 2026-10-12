@@ -8,13 +8,13 @@ use super::{
     frame_order_stats, metric_weight, resolve_selector, row_limit_reason,
 };
 
-pub(crate) fn top(
-    profile: &Profile,
+pub fn top<'p>(
+    profile: &'p Profile,
     metric: TopSort,
     limit: usize,
     frame: Option<&FrameSelector>,
     name_regex: Option<&str>,
-) -> Result<TopOutput, ApiError> {
+) -> Result<TopOutput<'p>, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
     let frame_id = frame
         .map(|selector| resolve_selector(profile, selector))
@@ -22,22 +22,22 @@ pub(crate) fn top(
     let scope_weight = frame_id.map_or(profile.total_weight, |id| {
         profile.frame_stats[id as usize].inclusive_weight
     });
-    let scoped_stacks = frame_id.and_then(|id| {
+    let scoped_postings = frame_id.and_then(|id| {
         let stacks = &profile.frame_to_stacks[id as usize];
         // A posting contains each matching stack once, including recursive frames.
         (stacks.len() != profile.stacks.len()).then_some(stacks)
     });
-    let sparse_stats = scoped_stacks
+    let sparse_stats = scoped_postings
         .filter(|stacks| {
             stacks.len() < profile.frames.len() / 8
                 && stacks
                     .iter()
-                    .map(|id| profile.stacks.stack(*id).frames.len())
+                    .map(|posting| profile.stacks.stack(*posting).frames.len())
                     .sum::<usize>()
                     < profile.frames.len() / 8
         })
         .map(|stacks| sparse_subset_stats(profile, stacks));
-    let scoped_stats = scoped_stacks
+    let scoped_stats = scoped_postings
         .filter(|_| sparse_stats.is_none())
         .map(|stacks| subset_stats(profile, stacks));
     let stats = scoped_stats.as_deref().unwrap_or(&profile.frame_stats);
@@ -46,7 +46,7 @@ pub(crate) fn top(
             .as_ref()
             .map_or(&stats[id as usize], |rows| &rows[&id].0)
     };
-    let is_subset = scoped_stacks.is_some();
+    let is_subset = scoped_postings.is_some();
     let regex = name_regex.map(compile_regex).transpose()?;
     let order = match metric {
         TopSort::SelfWeight => &profile.top_self,
@@ -76,14 +76,13 @@ pub(crate) fn top(
         if is_subset {
             let order = |a: &u32, b: &u32| {
                 if sparse_stats.is_none() {
-                    return frame_order_stats(profile, stats, *a, *b, metric);
+                    return frame_order_stats(stats, *a, *b, metric);
                 }
                 let an = stats_for(*a);
                 let bn = stats_for(*b);
                 metric_weight(bn, metric)
                     .cmp(&metric_weight(an, metric))
                     .then_with(|| bn.self_weight.cmp(&an.self_weight))
-                    .then_with(|| profile.frame_name(*a).cmp(profile.frame_name(*b)))
                     .then(a.cmp(b))
             };
             if ids.len() > limit {
@@ -104,7 +103,7 @@ pub(crate) fn top(
             bytes.row_name(profile.frame_name(*id))?;
             Ok(FrameRow {
                 frame_id: *id,
-                name: profile.frame_name(*id).to_owned(),
+                name: profile.frame_name(*id),
                 self_weight: stats.self_weight,
                 inclusive_weight: stats.inclusive_weight,
                 stack_count: stats.stack_count,
@@ -126,9 +125,10 @@ pub(crate) fn top(
     ))
 }
 
-fn sparse_subset_stats(profile: &Profile, stack_ids: &[u32]) -> HashMap<u32, (FrameStats, u32)> {
+fn sparse_subset_stats(profile: &Profile, postings: &[u32]) -> HashMap<u32, (FrameStats, u32)> {
     let mut result = HashMap::new();
-    for &stack_id in stack_ids {
+    for posting in postings {
+        let stack_id = *posting;
         let stack = profile.stacks.stack(stack_id);
         for &frame in stack.frames {
             let (stats, seen) = result
@@ -149,14 +149,15 @@ fn sparse_subset_stats(profile: &Profile, stack_ids: &[u32]) -> HashMap<u32, (Fr
     result
 }
 
-fn subset_stats(profile: &Profile, stack_ids: &[u32]) -> Vec<FrameStats> {
+fn subset_stats(profile: &Profile, postings: &[u32]) -> Vec<FrameStats> {
     let mut result = vec![FrameStats::default(); profile.frames.len()];
     let mut seen = vec![u32::MAX; profile.frames.len()];
-    for stack_id in stack_ids {
-        let stack = profile.stacks.stack(*stack_id);
+    for posting in postings {
+        let stack_id = *posting;
+        let stack = profile.stacks.stack(stack_id);
         for frame in stack.frames {
-            if seen[*frame as usize] != *stack_id {
-                seen[*frame as usize] = *stack_id;
+            if seen[*frame as usize] != stack_id {
+                seen[*frame as usize] = stack_id;
                 result[*frame as usize].inclusive_weight += stack.weight;
                 result[*frame as usize].stack_count += 1;
             }

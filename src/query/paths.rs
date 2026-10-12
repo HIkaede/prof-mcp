@@ -2,21 +2,19 @@ use crate::output::{
     FrameWindowMode, PathRow, PathsData, PathsOutput, ResponseBudget, TotalFrameBudget,
 };
 use serde_json::json;
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 
 use super::{
     ApiError, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES, Profile, TruncationReason, check_limit,
     envelope, percent, resolve_selector, row_limit_reason,
 };
 
-pub(crate) fn paths_with_window_budget(
-    profile: &Profile,
+pub fn paths_with_window_budget<'p>(
+    profile: &'p Profile,
     selector: &FrameSelector,
     limit: usize,
     window: Option<FrameWindow>,
     max_total_frames: usize,
-) -> Result<PathsOutput, ApiError> {
+) -> Result<PathsOutput<'p>, ApiError> {
     check_limit(limit, 1, 50, "limit")?;
     check_frame_window(window)?;
     check_limit(max_total_frames, 1, MAX_TOTAL_FRAMES, "max_total_frames")?;
@@ -24,9 +22,7 @@ pub(crate) fn paths_with_window_budget(
     let stack_ids = &profile.frame_to_stacks[frame as usize];
     let scope = profile.frame_stats[frame as usize].inclusive_weight;
     let available = stack_ids.len();
-    let order = |a: &u32, b: &u32| path_order(profile, *a, *b);
-    let mut stacks = select_paths(profile, stack_ids, limit);
-    stacks.sort_unstable_by(order);
+    let stacks = &stack_ids[..limit.min(stack_ids.len())];
     let mut truncation_reasons = row_limit_reason(limit, available);
     let selected_paths = stacks.len();
     let mut window_cropped_paths = 0usize;
@@ -38,8 +34,8 @@ pub(crate) fn paths_with_window_budget(
     let mut budget_cropped_paths = 0usize;
     let mut rows = Vec::new();
     let mut bytes = ResponseBudget::new();
-    for stack_id in stacks {
-        let stack = profile.stacks.stack(stack_id);
+    for posting in stacks {
+        let stack = profile.stacks.stack(*posting);
         let positions: Vec<_> = stack
             .frames
             .iter()
@@ -87,7 +83,7 @@ pub(crate) fn paths_with_window_budget(
             .map(|id| {
                 let name = profile.frame_name(*id);
                 bytes.json(&name)?;
-                Ok(name.to_owned())
+                Ok(name)
             })
             .collect::<Result<_, ApiError>>()?;
         let cropped = requested_frame_start != frame_start || requested_frame_end != frame_end;
@@ -218,64 +214,6 @@ fn budget_range(
             (start, start + remaining)
         }
     }
-}
-
-fn select_paths(profile: &Profile, stack_ids: &[u32], limit: usize) -> Vec<u32> {
-    if stack_ids.len() <= limit {
-        return stack_ids.to_vec();
-    }
-    let mut heap = BinaryHeap::with_capacity(limit);
-    for &id in stack_ids {
-        let candidate = PathCandidate { profile, id };
-        if heap.len() < limit {
-            heap.push(candidate);
-        } else if path_order(profile, id, heap.peek().expect("non-empty heap").id) == Ordering::Less
-        {
-            heap.pop();
-            heap.push(candidate);
-        }
-    }
-    heap.into_iter().map(|candidate| candidate.id).collect()
-}
-
-struct PathCandidate<'a> {
-    profile: &'a Profile,
-    id: u32,
-}
-
-impl PartialEq for PathCandidate<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for PathCandidate<'_> {}
-
-impl PartialOrd for PathCandidate<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for PathCandidate<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        path_order(self.profile, self.id, other.id)
-    }
-}
-
-fn path_order(profile: &Profile, a: u32, b: u32) -> Ordering {
-    profile.stacks.weights[b as usize]
-        .cmp(&profile.stacks.weights[a as usize])
-        .then_with(|| {
-            let a = profile.stacks.stack(a).frames;
-            let b = profile.stacks.stack(b).frames;
-            for (&a, &b) in a.iter().zip(b) {
-                if a != b {
-                    return profile.frame_name(a).cmp(profile.frame_name(b));
-                }
-            }
-            a.len().cmp(&b.len())
-        })
 }
 
 #[cfg(test)]

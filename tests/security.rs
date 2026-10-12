@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 
 use prof_mcp::{cache::ProfileCache, registry};
@@ -70,10 +72,10 @@ async fn non_utf8_workspace_metadata() {
     registry::register(&workspace, &source, Some("safe"), 1024).unwrap();
     let cache = ProfileCache::new(workspace, 1024, 2).unwrap();
     let loaded = cache.load(None).await.unwrap();
-    let summary = prof_mcp::query::summary(&loaded.profile);
+    let summary = support::json(prof_mcp::query::summary(&loaded.profile).unwrap());
     assert_eq!(summary["schema_version"], "2");
     assert_eq!(
         summary["profile"]["fingerprint"],
-        loaded.profile.source.fingerprint
+        loaded.profile.fingerprint()
     );
 }

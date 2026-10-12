@@ -14,14 +14,14 @@ use super::{
     frame_row, percent, resolve_selector, tree_reason_values,
 };
 
-pub(crate) fn callers(
-    profile: &Profile,
+pub fn callers<'p>(
+    profile: &'p Profile,
     selector: &FrameSelector,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
     continuation: Option<(&[u32], &str)>,
-) -> Result<DirectionOutput, ApiError> {
+) -> Result<DirectionOutput<'p>, ApiError> {
     directional(
         profile,
         selector,
@@ -32,14 +32,14 @@ pub(crate) fn callers(
         continuation,
     )
 }
-pub(crate) fn callees(
-    profile: &Profile,
+pub fn callees<'p>(
+    profile: &'p Profile,
     selector: &FrameSelector,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
     continuation: Option<(&[u32], &str)>,
-) -> Result<DirectionOutput, ApiError> {
+) -> Result<DirectionOutput<'p>, ApiError> {
     directional(
         profile,
         selector,
@@ -51,15 +51,15 @@ pub(crate) fn callees(
     )
 }
 
-fn directional(
-    profile: &Profile,
+fn directional<'p>(
+    profile: &'p Profile,
     selector: &FrameSelector,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
     callers: bool,
     continuation: Option<(&[u32], &str)>,
-) -> Result<DirectionOutput, ApiError> {
+) -> Result<DirectionOutput<'p>, ApiError> {
     check_budget(max_depth, max_nodes, min_scope_percent)?;
     let frame = resolve_selector(profile, selector)?;
     let prefix = continuation.map(|(path, _)| path).unwrap_or_default();
@@ -83,14 +83,12 @@ fn directional(
     }
     let mut tree = TempTree::new(prefix.last().copied().unwrap_or(frame));
     let mut work_remaining = MAX_DIRECTION_NODES - 1;
-    for stack_id in &profile.frame_to_stacks[frame as usize] {
-        let stack = profile.stacks.stack(*stack_id);
-        let anchor = if callers {
-            stack.frames.iter().rposition(|id| *id == frame)
-        } else {
-            stack.frames.iter().position(|id| *id == frame)
-        }
-        .expect("index points to frame");
+    for (posting_index, &stack_id) in profile.frame_to_stacks[frame as usize].iter().enumerate() {
+        let stack = profile.stacks.stack(stack_id);
+        let (first, last) = profile
+            .frame_to_stacks
+            .positions(frame as usize, posting_index);
+        let anchor = usize::from(if callers { last } else { first });
         let walk_len = if callers {
             anchor
         } else {
@@ -264,7 +262,7 @@ impl TempTree {
     }
 }
 
-fn ordered_children(profile: &Profile, nodes: &[TempNode], node: &TempNode) -> Vec<u32> {
+fn ordered_children(nodes: &[TempNode], node: &TempNode) -> Vec<u32> {
     let mut children = Vec::new();
     let mut child = node.first_child;
     while child != NO_CHILD {
@@ -276,28 +274,23 @@ fn ordered_children(profile: &Profile, nodes: &[TempNode], node: &TempNode) -> V
         let bn = &nodes[*b as usize];
         bn.total_weight
             .cmp(&an.total_weight)
-            .then_with(|| {
-                profile
-                    .frame_name(an.frame)
-                    .cmp(profile.frame_name(bn.frame))
-            })
             .then(an.frame.cmp(&bn.frame))
     });
     children
 }
-fn render_temp(
-    profile: &Profile,
+fn render_temp<'p>(
+    profile: &'p Profile,
     nodes: &[TempNode],
     node_id: u32,
     depth: usize,
-    state: &mut RenderState<'_, DirectionContinuation>,
+    state: &mut RenderState<'_, DirectionContinuation<'p>>,
     anchor: FrameId,
     callers: bool,
-) -> Result<(TreeNode, bool), ApiError> {
+) -> Result<(TreeNode<'p>, bool), ApiError> {
     *state.budget -= 1;
     let node = &nodes[node_id as usize];
     state.bytes.row_name(profile.frame_name(node.frame))?;
-    let children = ordered_children(profile, nodes, node);
+    let children = ordered_children(nodes, node);
     let mut rendered = Vec::new();
     let mut omitted_count = 0;
     let mut omitted_weight = 0;
@@ -330,7 +323,7 @@ fn render_temp(
                 cursor.push(id);
                 state.continuations.push(DirectionContinuation {
                     frame_id: id,
-                    name: profile.frame_name(id).to_owned(),
+                    name: profile.frame_name(id),
                     reason,
                     continuation: Continuation {
                         profile: String::new(),
@@ -360,7 +353,7 @@ fn render_temp(
         TreeNode {
             node_id: None,
             frame_id: Some(node.frame),
-            name: Some(profile.frame_name(node.frame).to_owned()),
+            name: Some(profile.frame_name(node.frame)),
             self_weight: node.self_weight,
             total_weight: node.total_weight,
             profile_percent: percent(node.total_weight, profile.total_weight),

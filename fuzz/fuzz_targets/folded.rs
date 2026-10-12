@@ -16,29 +16,27 @@ fuzz_target!(|input: &[u8]| {
         ..BuildLimits::default()
     };
     let parse = || {
-        ProfileBuilder::new(limits).from_reader(
-            Cursor::new(input),
-            PathBuf::from("fuzz.folded"),
-            input.len() as u64,
-            None,
-        )
+        ProfileBuilder::new(limits).from_reader(Cursor::new(input), PathBuf::from("fuzz.folded"))
     };
     match (parse(), parse()) {
         (Ok(left), Ok(right)) => {
-            assert_eq!(query::summary(&left), query::summary(&right));
             assert_eq!(
-                left.frame_stats
+                format!("{:?}", query::summary(&left)),
+                format!("{:?}", query::summary(&right))
+            );
+            assert_eq!(
+                left.frame_stats()
                     .iter()
                     .map(|stats| stats.self_weight)
                     .sum::<u64>(),
-                left.total_weight
+                left.total_weight()
             );
             assert!(
-                left.frame_stats
+                left.frame_stats()
                     .iter()
-                    .all(|stats| stats.inclusive_weight <= left.total_weight)
+                    .all(|stats| stats.inclusive_weight <= left.total_weight())
             );
-            assert!(left.max_depth <= limits.max_depth);
+            assert!(left.max_depth() <= limits.max_depth);
             assert!(input.len() as u64 <= limits.max_file_bytes);
         }
         (Err(left), Err(right)) => assert_eq!(left.to_string(), right.to_string()),

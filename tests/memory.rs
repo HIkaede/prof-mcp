@@ -1,10 +1,10 @@
 mod support;
 
-use prof_mcp::profile::{ContextNode, FrameStats, Profile, RecursionStats};
+use prof_mcp::profile::{ContextNode, Profile, RecursionStats};
 
 #[test]
-fn breakdown_counts_arrays_and_spare_capacity() {
-    let mut profile = support::profile("root;foo;foo 7\nroot;bar 3\n");
+fn breakdown_counts_frozen_arrays() {
+    let profile = support::profile("root;foo;foo 7\nroot;bar 3\n");
     let before = profile.memory_breakdown();
     assert_eq!(before.frame_name_bytes, 10);
     assert_eq!(before.frame_offsets_bytes, 4 * 4);
@@ -13,6 +13,7 @@ fn breakdown_counts_arrays_and_spare_capacity() {
     assert_eq!(before.stack_weights_bytes, 2 * 8);
     assert_eq!(before.posting_offsets_bytes, 4 * 4);
     assert_eq!(before.posting_entries_bytes, 4 * 4);
+    assert_eq!(before.posting_positions_bytes, 4 * 4 + 3 * 4);
     assert_eq!(
         before.cct_nodes_bytes,
         5 * std::mem::size_of::<ContextNode>()
@@ -26,22 +27,12 @@ fn breakdown_counts_arrays_and_spare_capacity() {
     );
     assert_eq!(before.total_bytes, profile.estimated_size_bytes());
 
-    profile.frame_stats.reserve(100);
-    profile.source.fingerprint.reserve(100);
-    let after = profile.memory_breakdown();
     assert_eq!(
-        after.frame_stats_bytes,
-        profile.frame_stats.capacity() * std::mem::size_of::<FrameStats>()
+        before.frame_stats_bytes,
+        std::mem::size_of_val(profile.frame_stats())
     );
-    assert_eq!(
-        after.metadata_bytes,
-        std::mem::size_of::<Profile>() + profile.source.fingerprint.capacity()
-    );
-    assert_eq!(
-        after.total_bytes - before.total_bytes,
-        after.frame_stats_bytes - before.frame_stats_bytes + after.metadata_bytes
-            - before.metadata_bytes
-    );
+    assert!(before.metadata_bytes >= std::mem::size_of::<Profile>() + profile.fingerprint().len());
+    assert_eq!(std::mem::size_of::<ContextNode>(), 16);
 }
 
 #[test]
@@ -52,12 +43,13 @@ fn empty_profile_still_counts_root_and_sentinels() {
     assert_eq!(bytes.frame_offsets_bytes, 4);
     assert_eq!(bytes.stack_offsets_bytes, 4);
     assert_eq!(bytes.posting_offsets_bytes, 4);
+    assert_eq!(bytes.posting_positions_bytes, 4);
     assert_eq!(bytes.cct_nodes_bytes, std::mem::size_of::<ContextNode>());
     assert_eq!(bytes.cct_offsets_bytes, 8);
     assert_eq!(bytes.cct_edges_bytes, 0);
     assert_eq!(
         bytes.total_bytes,
-        bytes.metadata_bytes + 20 + bytes.cct_nodes_bytes
+        bytes.metadata_bytes + 24 + bytes.cct_nodes_bytes
     );
 }
 

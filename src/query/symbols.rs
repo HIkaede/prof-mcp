@@ -4,12 +4,12 @@ use super::{
     ApiError, MatchMode, Profile, check_limit, compile_regex, envelope, frame_row, row_limit_reason,
 };
 
-pub(crate) fn find_symbols(
-    profile: &Profile,
-    query: &str,
+pub fn find_symbols<'p>(
+    profile: &'p Profile,
+    query: &'p str,
     mode: MatchMode,
     limit: usize,
-) -> Result<FindOutput, ApiError> {
+) -> Result<FindOutput<'p>, ApiError> {
     check_limit(limit, 1, 100, "limit")?;
     let regex = match mode {
         MatchMode::Contains => None,
@@ -31,7 +31,7 @@ pub(crate) fn find_symbols(
     }
     let truncation_reasons = row_limit_reason(limit, available);
     let warnings = if ids.is_empty() {
-        vec!["No exact frame identities matched.".into()]
+        vec!["No exact frame identities matched."]
     } else {
         Vec::new()
     };
@@ -55,7 +55,7 @@ pub(crate) fn find_symbols(
         truncation_reasons,
         warnings,
         FindData {
-            query: query.into(),
+            query,
             mode,
             matches: rows,
         },

@@ -4,7 +4,7 @@ use prof_mcp::query;
 #[test]
 fn tree_pruning_and_continuations() {
     let profile = support::profile("A 5\nB 4\nC 1\n");
-    let one = query::tree(&profile, 0, None, 0, 1, 0.0).unwrap();
+    let one = support::json(query::tree(&profile, 0, None, 0, 1, 0.0).unwrap());
     assert!(one["truncated"].as_bool().unwrap());
     assert_eq!(one["data"]["root"]["omitted_children"], 3);
     assert_eq!(one["truncation_reasons"][0]["kind"], "depth_limit");
@@ -14,44 +14,40 @@ fn tree_pruning_and_continuations() {
     assert_eq!(one["data"]["continuations_available"], 3);
     assert_eq!(one["data"]["continuations_omitted"], 0);
     assert_eq!(
-        one["data"]["continuations"][0]["profile_fingerprint"],
-        profile.source.fingerprint
+        one["data"]["continuations"][0]["continuation"]["fingerprint"],
+        profile.fingerprint()
     );
     let continuation = one["data"]["continuations"][0]["node_id"].as_u64().unwrap() as u32;
-    let continuation_page = query::tree(
-        &profile,
-        continuation,
-        Some(&profile.source.fingerprint),
-        4,
-        64,
-        0.0,
-    )
-    .unwrap();
+    let continuation_page = support::json(
+        query::tree(
+            &profile,
+            continuation,
+            Some(profile.fingerprint()),
+            4,
+            64,
+            0.0,
+        )
+        .unwrap(),
+    );
     assert_eq!(continuation_page["data"]["root"]["node_id"], continuation);
-    let threshold = query::tree(&profile, 0, None, 4, 64, 20.0).unwrap();
+    let threshold = support::json(query::tree(&profile, 0, None, 4, 64, 20.0).unwrap());
     assert_eq!(threshold["data"]["root"]["omitted_children"], 1);
     assert_eq!(
         threshold["truncation_reasons"][0]["kind"],
         "min_scope_percent"
     );
-    let tree = query::tree(&profile, 0, None, 4, 2, 0.0).unwrap();
+    let tree = support::json(query::tree(&profile, 0, None, 4, 2, 0.0).unwrap());
     assert_eq!(tree["truncation_reasons"][0]["kind"], "node_budget");
     let child_id = tree["data"]["root"]["children"][0]["node_id"]
         .as_u64()
         .unwrap() as u32;
     let error = query::tree(&profile, child_id, None, 4, 64, 0.0).unwrap_err();
     assert_eq!(error.code, "profile_changed");
-    let page = query::tree(
-        &profile,
-        child_id,
-        Some(&profile.source.fingerprint),
-        4,
-        64,
-        0.0,
-    )
-    .unwrap();
+    let page = support::json(
+        query::tree(&profile, child_id, Some(profile.fingerprint()), 4, 64, 0.0).unwrap(),
+    );
     assert_eq!(page["scope_weight"], 5);
-    let repeat = query::tree(&profile, 0, None, 4, 2, 0.0).unwrap();
+    let repeat = support::json(query::tree(&profile, 0, None, 4, 2, 0.0).unwrap());
     assert_eq!(tree, repeat);
 }
 
@@ -68,7 +64,7 @@ fn tree_construction_bounds_long_names_in_nodes_and_continuations() {
 #[test]
 fn mixed_tree_truncations_keep_fields_and_reason_order() {
     let profile = support::profile("A;leafA 10\nB;leafB 3\nC 1\n");
-    let tree = query::tree(&profile, 0, None, 1, 2, 10.0).unwrap();
+    let tree = support::json(query::tree(&profile, 0, None, 1, 2, 10.0).unwrap());
     assert_eq!(
         tree["truncation_reasons"],
         serde_json::json!([

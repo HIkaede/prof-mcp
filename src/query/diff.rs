@@ -19,18 +19,18 @@ struct Candidate<'a> {
     name_rank: usize,
 }
 
-pub(crate) fn diff(
-    baseline: &Profile,
-    candidate: &Profile,
+pub fn diff<'p>(
+    baseline: &'p Profile,
+    candidate: &'p Profile,
     metric: TopSort,
     sort: DiffSort,
     limit: usize,
     name_regex: Option<&str>,
-) -> Result<DiffOutput, ApiError> {
+) -> Result<DiffOutput<'p>, ApiError> {
     check_limit(limit, 1, 200, "limit")?;
     let regex = name_regex.map(compile_regex).transpose()?;
-    let mut baseline_ids = baseline.frames.name_order.iter().copied().peekable();
-    let mut candidate_ids = candidate.frames.name_order.iter().copied().peekable();
+    let mut baseline_ids = (0..baseline.frames.len() as u32).peekable();
+    let mut candidate_ids = (0..candidate.frames.len() as u32).peekable();
     let mut rows = BinaryHeap::with_capacity(
         limit.min(baseline.frames.len().saturating_add(candidate.frames.len())),
     );
@@ -89,7 +89,7 @@ pub(crate) fn diff(
         .map(|row| {
             bytes.row_name(row.name)?;
             Ok(DiffRow {
-                name: row.name.to_owned(),
+                name: row.name,
                 baseline_weight: row.baseline_weight,
                 candidate_weight: row.candidate_weight,
                 baseline_percent: percent(row.baseline_weight, baseline.total_weight),
@@ -103,11 +103,11 @@ pub(crate) fn diff(
         candidate,
         candidate.total_weight,
         truncation_reasons,
-        vec!["Percentage-point changes do not prove causality or statistical significance.".into()],
+        vec!["Percentage-point changes do not prove causality or statistical significance."],
         DiffData { metric, sort, rows },
     );
     Ok(DiffOutput {
-        schema_version: SCHEMA_VERSION.into(),
+        schema_version: SCHEMA_VERSION,
         baseline: output_profile(baseline),
         candidate: output.profile,
         scope_weight: DiffScopeWeight {

@@ -6,20 +6,22 @@ use prof_mcp::query::{self, FrameSelector};
 fn shared_callee_accounting() {
     let diamond = support::profile(support::DIAMOND);
     let x = support::frame(&diamond, "X");
-    assert_eq!(diamond.frame_stats[x as usize].self_weight, 50);
-    assert_eq!(diamond.frame_stats[x as usize].inclusive_weight, 50);
-    let callers = query::callers(
-        &diamond,
-        &FrameSelector {
-            frame_id: Some(x),
-            frame_name: None,
-        },
-        5,
-        64,
-        0.0,
-        None,
-    )
-    .unwrap();
+    assert_eq!(diamond.frame_stats()[x as usize].self_weight, 50);
+    assert_eq!(diamond.frame_stats()[x as usize].inclusive_weight, 50);
+    let callers = support::json(
+        query::callers(
+            &diamond,
+            &FrameSelector {
+                frame_id: Some(x),
+                frame_name: None,
+            },
+            5,
+            64,
+            0.0,
+            None,
+        )
+        .unwrap(),
+    );
     let names: Vec<_> = callers["data"]["root"]["children"]
         .as_array()
         .unwrap()
@@ -29,19 +31,21 @@ fn shared_callee_accounting() {
     assert_eq!(names, vec!["B", "A"]);
     let shared = support::profile(support::SHARED_CALLEE);
     let x = support::frame(&shared, "X");
-    assert_eq!(shared.frame_stats[x as usize].inclusive_weight, 50);
-    let callees = query::callees(
-        &shared,
-        &FrameSelector {
-            frame_id: Some(x),
-            frame_name: None,
-        },
-        5,
-        64,
-        0.0,
-        None,
-    )
-    .unwrap();
+    assert_eq!(shared.frame_stats()[x as usize].inclusive_weight, 50);
+    let callees = support::json(
+        query::callees(
+            &shared,
+            &FrameSelector {
+                frame_id: Some(x),
+                frame_name: None,
+            },
+            5,
+            64,
+            0.0,
+            None,
+        )
+        .unwrap(),
+    );
     let names: Vec<_> = callees["data"]["root"]["children"]
         .as_array()
         .unwrap()
@@ -55,32 +59,36 @@ fn shared_callee_accounting() {
 fn recursive_direction_anchors() {
     let profile = support::profile(support::RECURSION);
     let foo = support::frame(&profile, "foo");
-    assert_eq!(profile.frame_stats[foo as usize].inclusive_weight, 10);
-    let callers = query::callers(
-        &profile,
-        &FrameSelector {
-            frame_id: Some(foo),
-            frame_name: None,
-        },
-        5,
-        64,
-        0.0,
-        None,
-    )
-    .unwrap();
+    assert_eq!(profile.frame_stats()[foo as usize].inclusive_weight, 10);
+    let callers = support::json(
+        query::callers(
+            &profile,
+            &FrameSelector {
+                frame_id: Some(foo),
+                frame_name: None,
+            },
+            5,
+            64,
+            0.0,
+            None,
+        )
+        .unwrap(),
+    );
     assert_eq!(callers["data"]["root"]["children"][0]["name"], "foo");
-    let callees = query::callees(
-        &profile,
-        &FrameSelector {
-            frame_id: Some(foo),
-            frame_name: None,
-        },
-        5,
-        64,
-        0.0,
-        None,
-    )
-    .unwrap();
+    let callees = support::json(
+        query::callees(
+            &profile,
+            &FrameSelector {
+                frame_id: Some(foo),
+                frame_name: None,
+            },
+            5,
+            64,
+            0.0,
+            None,
+        )
+        .unwrap(),
+    );
     assert_eq!(callees["data"]["root"]["children"][0]["name"], "foo");
     assert_eq!(
         callees["data"]["root"]["children"][0]["children"][0]["name"],
@@ -92,43 +100,48 @@ fn recursive_direction_anchors() {
 fn resume_caller_continuations() {
     let profile = support::profile("root;mid;deep;deeper;anchor 10\n");
     let anchor = support::frame(&profile, "anchor");
-    let shallow = query::callers(
-        &profile,
-        &FrameSelector {
-            frame_id: Some(anchor),
-            frame_name: None,
-        },
-        1,
-        64,
-        0.0,
-        None,
-    )
-    .unwrap();
+    let shallow = support::json(
+        query::callers(
+            &profile,
+            &FrameSelector {
+                frame_id: Some(anchor),
+                frame_name: None,
+            },
+            1,
+            64,
+            0.0,
+            None,
+        )
+        .unwrap(),
+    );
     let continuations = shallow["data"]["continuations"].as_array().unwrap();
     assert!(!continuations.is_empty());
     let first = &continuations[0];
-    assert_eq!(first["profile_fingerprint"], profile.source.fingerprint);
-    assert!(first["node_path"].as_array().unwrap().len() >= 2);
+    assert_eq!(first["continuation"]["fingerprint"], profile.fingerprint());
+    assert!(first["continuation"]["cursor"].as_array().unwrap().len() >= 3);
 
-    let fingerprint = first["profile_fingerprint"].as_str().unwrap();
-    let node_path: Vec<u32> = first["node_path"]
+    let fingerprint = first["continuation"]["fingerprint"].as_str().unwrap();
+    let node_path: Vec<u32> = first["continuation"]["cursor"]
         .as_array()
         .unwrap()
         .iter()
+        .skip(1)
         .map(|value| value.as_u64().unwrap() as u32)
         .collect();
-    let resumed = query::callers(
-        &profile,
-        &FrameSelector {
-            frame_id: Some(anchor),
-            frame_name: None,
-        },
-        2,
-        64,
-        0.0,
-        Some((node_path.as_slice(), fingerprint)),
-    )
-    .unwrap();
+    let resumed = support::json(
+        query::callers(
+            &profile,
+            &FrameSelector {
+                frame_id: Some(anchor),
+                frame_name: None,
+            },
+            2,
+            64,
+            0.0,
+            Some((node_path.as_slice(), fingerprint)),
+        )
+        .unwrap(),
+    );
     assert_eq!(resumed["data"]["root"]["name"], first["name"]);
     assert_eq!(resumed["scope_weight"], first["total_weight"]);
 }
@@ -170,9 +183,10 @@ fn repeated_direction_pages() {
             let continuation = if path.is_empty() {
                 None
             } else {
-                Some((path.as_slice(), profile.source.fingerprint.as_str()))
+                Some((path.as_slice(), profile.fingerprint()))
             };
-            let page = direction(&profile, &selector, 0, 1, 0.0, continuation).unwrap();
+            let page =
+                support::json(direction(&profile, &selector, 0, 1, 0.0, continuation).unwrap());
             let expected = if callers { 79 - step } else { step };
             assert_eq!(page["data"]["root"]["name"], format!("frame{expected}"));
             assert_eq!(page["scope_weight"], 10);
@@ -180,10 +194,11 @@ fn repeated_direction_pages() {
             if step == 79 {
                 assert!(omitted.is_empty());
             } else {
-                path = omitted[0]["node_path"]
+                path = omitted[0]["continuation"]["cursor"]
                     .as_array()
                     .unwrap()
                     .iter()
+                    .skip(1)
                     .map(|id| id.as_u64().unwrap() as u32)
                     .collect();
                 assert_eq!(path.len(), step + 1);
@@ -202,30 +217,39 @@ fn deep_continuation() {
     };
     let a = support::frame(&profile, "a");
     let prefix = vec![a; 4094];
-    let response = query::callees(
-        &profile,
-        &selector,
-        0,
-        1,
-        0.0,
-        Some((&prefix, &profile.source.fingerprint)),
-    )
-    .unwrap();
+    let response = support::json(
+        query::callees(
+            &profile,
+            &selector,
+            0,
+            1,
+            0.0,
+            Some((&prefix, profile.fingerprint())),
+        )
+        .unwrap(),
+    );
     assert_eq!(response["scope_weight"], 7);
     assert_eq!(response["data"]["root"]["self_weight"], 0);
     assert_eq!(response["data"]["root"]["omitted_weight"], 7);
-    let next: Vec<u32> =
-        serde_json::from_value(response["data"]["continuations"][0]["node_path"].clone()).unwrap();
+    let next: Vec<u32> = response["data"]["continuations"][0]["continuation"]["cursor"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|id| id.as_u64().unwrap() as u32)
+        .collect();
     assert_eq!(next.len(), 4095);
-    let leaf = query::callees(
-        &profile,
-        &selector,
-        0,
-        1,
-        0.0,
-        Some((&next, &profile.source.fingerprint)),
-    )
-    .unwrap();
+    let leaf = support::json(
+        query::callees(
+            &profile,
+            &selector,
+            0,
+            1,
+            0.0,
+            Some((&next, profile.fingerprint())),
+        )
+        .unwrap(),
+    );
     assert_eq!(leaf["data"]["root"]["self_weight"], 7);
     assert_eq!(leaf["data"]["root"]["total_weight"], 7);
     assert_eq!(leaf["data"]["continuations"], serde_json::json!([]));
@@ -249,21 +273,23 @@ fn deep_continuation_construction_has_a_byte_budget() {
         0,
         1,
         0.0,
-        Some((&cursor, &profile.source.fingerprint)),
+        Some((&cursor, profile.fingerprint())),
     )
     .unwrap_err();
     assert_eq!(error.code, "query_too_large");
     assert_eq!(error.details["resource"], "response_bytes");
     // Rendering these leaves needs no repeated deep cursors and still fits.
-    let page = query::callees(
-        &profile,
-        &selector,
-        1,
-        129,
-        0.0,
-        Some((&cursor, &profile.source.fingerprint)),
-    )
-    .unwrap();
+    let page = support::json(
+        query::callees(
+            &profile,
+            &selector,
+            1,
+            129,
+            0.0,
+            Some((&cursor, profile.fingerprint())),
+        )
+        .unwrap(),
+    );
     assert_eq!(page["scope_weight"], 128);
     assert_eq!(
         page["data"]["root"]["children"].as_array().unwrap().len(),

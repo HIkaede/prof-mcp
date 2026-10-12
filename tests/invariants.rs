@@ -3,32 +3,27 @@ mod support;
 use prof_mcp::profile::Profile;
 
 fn assert_invariants(profile: &Profile) {
-    assert_eq!(profile.frames.name_offsets.len(), profile.frames.len() + 1);
-    assert_eq!(profile.frames.name_offsets[0], 0);
     assert_eq!(
-        *profile.frames.name_offsets.last().unwrap() as usize,
-        profile.frames.name_text.len()
+        profile.frames().name_offsets().len(),
+        profile.frames().len() + 1
     );
-    let mut ordered_names = profile.frames.iter().collect::<Vec<_>>();
+    assert_eq!(profile.frames().name_offsets()[0], 0);
+    assert_eq!(
+        *profile.frames().name_offsets().last().unwrap() as usize,
+        profile.frames().name_text().len()
+    );
+    let mut ordered_names = profile.frames().iter().collect::<Vec<_>>();
     ordered_names.sort_unstable();
-    assert_eq!(
-        profile
-            .frames
-            .name_order
-            .iter()
-            .map(|id| profile.frame_name(*id))
-            .collect::<Vec<_>>(),
-        ordered_names
-    );
-    for (id, name) in profile.frames.iter().enumerate() {
+    assert_eq!(profile.frames().iter().collect::<Vec<_>>(), ordered_names);
+    for (id, name) in profile.frames().iter().enumerate() {
         assert_eq!(profile.frame_id(name), Some(id as u32));
     }
     assert_eq!(profile.frame_id("missing-frame"), None);
-    for (order, inclusive) in [(&profile.top_self, false), (&profile.top_inclusive, true)] {
-        let mut expected: Vec<_> = (0..profile.frames.len() as u32).collect();
+    for (order, inclusive) in [(profile.top_self(), false), (profile.top_inclusive(), true)] {
+        let mut expected: Vec<_> = (0..profile.frames().len() as u32).collect();
         expected.sort_unstable_by(|a, b| {
-            let an = &profile.frame_stats[*a as usize];
-            let bn = &profile.frame_stats[*b as usize];
+            let an = &profile.frame_stats()[*a as usize];
+            let bn = &profile.frame_stats()[*b as usize];
             let metric = |stats: &prof_mcp::profile::FrameStats| {
                 if inclusive {
                     stats.inclusive_weight
@@ -42,91 +37,117 @@ fn assert_invariants(profile: &Profile) {
                 .then_with(|| profile.frame_name(*a).cmp(profile.frame_name(*b)))
                 .then(a.cmp(b))
         });
-        assert_eq!(order.as_ref(), expected);
+        assert_eq!(order, expected);
     }
-    assert_eq!(profile.stacks.offsets.len(), profile.stacks.len() + 1);
-    assert_eq!(profile.stacks.offsets[0], 0);
+    assert_eq!(profile.stacks().offsets().len(), profile.stacks().len() + 1);
+    assert_eq!(profile.stacks().offsets()[0], 0);
     assert_eq!(
-        *profile.stacks.offsets.last().unwrap() as usize,
-        profile.stacks.frames.len()
+        *profile.stacks().offsets().last().unwrap() as usize,
+        profile.stacks().frames().len()
     );
     assert!(
         profile
-            .stacks
-            .offsets
+            .stacks()
+            .offsets()
             .windows(2)
             .all(|range| range[0] < range[1])
     );
     assert_eq!(
-        profile.stacks.weights.iter().sum::<u64>(),
-        profile.total_weight
+        profile.stacks().weights().iter().sum::<u64>(),
+        profile.total_weight()
     );
     assert_eq!(
-        profile.frame_to_stacks.offsets.len(),
-        profile.frames.len() + 1
+        profile.postings().offsets().len(),
+        profile.frames().len() + 1
     );
-    assert_eq!(profile.frame_to_stacks.offsets[0], 0);
+    assert_eq!(profile.postings().offsets()[0], 0);
     assert_eq!(
-        *profile.frame_to_stacks.offsets.last().unwrap() as usize,
-        profile.frame_to_stacks.stack_ids.len()
+        *profile.postings().offsets().last().unwrap() as usize,
+        profile.postings().entries().len()
     );
-    assert_eq!(profile.cct.child_offsets.len(), profile.cct.nodes.len() + 1);
-    assert_eq!(profile.cct.child_offsets[0], 0);
-    assert_eq!(profile.cct.children.len(), profile.cct.nodes.len() - 1);
     assert_eq!(
-        *profile.cct.child_offsets.last().unwrap() as usize,
-        profile.cct.children.len()
+        profile.cct().child_offsets().len(),
+        profile.cct().nodes().len() + 1
     );
-    assert_eq!(profile.root().total_weight, profile.total_weight);
-    for (id, node) in profile.cct.nodes.iter().enumerate() {
+    assert_eq!(profile.cct().child_offsets()[0], 0);
+    assert_eq!(
+        profile.cct().child_ids().len(),
+        profile.cct().nodes().len() - 1
+    );
+    assert_eq!(
+        *profile.cct().child_offsets().last().unwrap() as usize,
+        profile.cct().child_ids().len()
+    );
+    assert_eq!(profile.root().total_weight(), profile.total_weight());
+    for (id, node) in profile.cct().nodes().iter().enumerate() {
         assert_eq!(
-            node.total_weight,
-            node.self_weight
+            node.total_weight(),
+            profile.cct().self_weight(id as u32)
                 + profile
-                    .cct
+                    .cct()
                     .children(id as u32)
                     .iter()
-                    .map(|id| profile.cct.nodes[*id as usize].total_weight)
+                    .map(|id| profile.cct().nodes()[*id as usize].total_weight())
                     .sum::<u64>()
         );
     }
     assert_eq!(
         profile
-            .frame_stats
+            .frame_stats()
             .iter()
             .map(|stats| stats.self_weight)
             .sum::<u64>(),
-        profile.total_weight
+        profile.total_weight()
     );
-    for stats in &profile.frame_stats {
+    for stats in profile.frame_stats() {
         assert!(
             stats.self_weight <= stats.inclusive_weight
-                && stats.inclusive_weight <= profile.total_weight
+                && stats.inclusive_weight <= profile.total_weight()
         );
     }
-    for (frame, ids) in profile.frame_to_stacks.iter().enumerate() {
-        let mut unique = ids.to_vec();
-        unique.sort();
-        unique.dedup();
-        assert_eq!(unique.len(), ids.len());
+    let stacks = profile.stacks().iter().collect::<Vec<_>>();
+    assert!(
+        stacks
+            .windows(2)
+            .all(|pair| pair[0].frames < pair[1].frames)
+    );
+    for (frame, postings) in profile.postings().iter().enumerate() {
+        let mut actual = postings.to_vec();
+        actual.sort_unstable();
+        actual.dedup();
+        assert_eq!(actual.len(), postings.len());
         let expected: Vec<_> = profile
-            .stacks
+            .stacks()
             .iter()
             .enumerate()
             .filter(|(_, stack)| stack.frames.contains(&(frame as u32)))
             .map(|(id, _)| id as u32)
             .collect();
-        assert_eq!(ids, expected);
-        let stats = &profile.frame_stats[frame];
-        assert_eq!(stats.stack_count as usize, ids.len());
+        assert_eq!(actual, expected);
+        assert!(postings.windows(2).all(|pair| {
+            let key = |p: &u32| (std::cmp::Reverse(profile.stacks().stack(*p).weight), *p);
+            key(&pair[0]) < key(&pair[1])
+        }));
+        let stats = &profile.frame_stats()[frame];
+        assert_eq!(stats.stack_count as usize, postings.len());
         assert_eq!(
             stats.inclusive_weight,
-            ids.iter()
-                .map(|id| profile.stacks.stack(*id).weight)
+            postings
+                .iter()
+                .map(|p| profile.stacks().stack(*p).weight)
                 .sum::<u64>()
         );
-        for id in ids {
-            assert!(profile.stacks.stack(*id).frames.contains(&(frame as u32)));
+        for (posting_index, &stack_id) in postings.iter().enumerate() {
+            let frames = profile.stacks().stack(stack_id).frames;
+            let (first, last) = profile.postings().positions(frame, posting_index);
+            assert_eq!(
+                first as usize,
+                frames.iter().position(|&id| id == frame as u32).unwrap()
+            );
+            assert_eq!(
+                last as usize,
+                frames.iter().rposition(|&id| id == frame as u32).unwrap()
+            );
         }
     }
     assert_reference_cct(profile);
@@ -141,7 +162,7 @@ fn assert_reference_cct(profile: &Profile) {
         children: std::collections::BTreeMap<u32, u32>,
     }
     let mut nodes = vec![Node::default()];
-    for stack in profile.stacks.iter() {
+    for stack in profile.stacks().iter() {
         let mut node = 0;
         nodes[node].total_weight += stack.weight;
         for &frame in stack.frames {
@@ -162,11 +183,15 @@ fn assert_reference_cct(profile: &Profile) {
         }
         nodes[node].self_weight += stack.weight;
     }
-    assert_eq!(nodes.len(), profile.cct.nodes.len());
+    assert_eq!(nodes.len(), profile.cct().nodes().len());
     for (id, expected) in nodes.iter().enumerate() {
-        let actual = &profile.cct.nodes[id];
+        let actual = &profile.cct().nodes()[id];
         assert_eq!(
-            (actual.frame, actual.self_weight, actual.total_weight),
+            (
+                actual.frame(),
+                profile.cct().self_weight(id as u32),
+                actual.total_weight()
+            ),
             (expected.frame, expected.self_weight, expected.total_weight)
         );
         let mut children: Vec<_> = expected.children.values().copied().collect();
@@ -182,7 +207,7 @@ fn assert_reference_cct(profile: &Profile) {
                 })
                 .then(a.cmp(b))
         });
-        assert_eq!(profile.cct.children(id as u32), children);
+        assert_eq!(profile.cct().children(id as u32), children);
     }
 }
 
@@ -192,10 +217,10 @@ fn compact_layout_handles_empty_deep_and_prefix_stacks() {
     let deep = vec!["recursive"; 4096].join(";");
     let profile = support::profile(&format!("{deep} 7\nrecursive 3\nrecursive;branch 7\n"));
     assert_invariants(&profile);
-    assert_eq!(profile.max_depth, 4096);
-    assert_eq!(profile.stacks.stack(0).frames.len(), 1);
-    assert_eq!(profile.recursive_frames[0].max_occurrences, 4096);
-    assert_eq!(profile.recursive_frames[0].affected_weight, 7);
+    assert_eq!(profile.max_depth(), 4096);
+    assert_eq!(profile.stacks().stack(0).frames.len(), 1);
+    assert_eq!(profile.recursive_frames()[0].max_occurrences, 4096);
+    assert_eq!(profile.recursive_frames()[0].affected_weight, 7);
 }
 
 #[test]
@@ -216,9 +241,9 @@ fn lexical_names_preserve_unicode_and_weight_ties() {
 // statistics by symbol name when byte order or duplicate-line layout changes.
 fn stats_by_name(profile: &Profile) -> std::collections::BTreeMap<&str, (u64, u64, u32)> {
     profile
-        .frames
+        .frames()
         .iter()
-        .zip(&profile.frame_stats)
+        .zip(profile.frame_stats())
         .map(|(frame, stats)| {
             (
                 frame,
@@ -259,13 +284,17 @@ fn equivalent_folded_inputs() {
                         .collect::<String>();
                     let candidate = support::profile(&split);
                     assert_invariants(&candidate);
-                    assert_eq!(baseline.total_weight, candidate.total_weight);
+                    assert_eq!(baseline.total_weight(), candidate.total_weight());
                     assert_eq!(stats_by_name(&baseline), stats_by_name(&candidate));
                     for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
-                        let top = query::top(&candidate, metric, 20, None, None).unwrap();
-                        assert_eq!(top, query::top(&candidate, metric, 20, None, None).unwrap());
+                        let top =
+                            support::json(query::top(&candidate, metric, 20, None, None).unwrap());
+                        assert_eq!(
+                            top,
+                            support::json(query::top(&candidate, metric, 20, None, None).unwrap())
+                        );
                         let ranked_names = |p: &Profile| {
-                            query::top(p, metric, 20, None, None).unwrap()["data"]["rows"]
+                            support::json(query::top(p, metric, 20, None, None).unwrap())["data"]["rows"]
                                 .as_array()
                                 .unwrap()
                                 .iter()
@@ -274,17 +303,19 @@ fn equivalent_folded_inputs() {
                         };
                         assert_eq!(ranked_names(&baseline), ranked_names(&candidate));
                         for other in [&baseline, &candidate] {
-                            let diff = query::diff(
-                                &candidate,
-                                other,
-                                metric,
-                                DiffSort::Absolute,
-                                20,
-                                None,
-                            )
-                            .unwrap();
+                            let diff = support::json(
+                                query::diff(
+                                    &candidate,
+                                    other,
+                                    metric,
+                                    DiffSort::Absolute,
+                                    20,
+                                    None,
+                                )
+                                .unwrap(),
+                            );
                             let rows = diff["data"]["rows"].as_array().unwrap();
-                            assert_eq!(rows.len(), candidate.frames.len());
+                            assert_eq!(rows.len(), candidate.frames().len());
                             for row in rows {
                                 assert_eq!(row["delta_pp"], 0.0);
                                 assert_eq!(row["baseline_weight"], row["candidate_weight"]);
@@ -295,7 +326,16 @@ fn equivalent_folded_inputs() {
                         frame_name: Some("A".into()),
                         frame_id: None,
                     };
-                    let full = query::paths(&candidate, &selector, 20).unwrap();
+                    let full = support::json(
+                        prof_mcp::query::paths_with_window_budget(
+                            &candidate,
+                            &selector,
+                            20,
+                            None,
+                            prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+                        )
+                        .unwrap(),
+                    );
                     for window in [
                         FrameWindow::Head { lines: 1 },
                         FrameWindow::Tail { lines: 1 },
@@ -304,9 +344,16 @@ fn equivalent_folded_inputs() {
                             after: 1,
                         },
                     ] {
-                        let windowed =
-                            query::paths_with_window(&candidate, &selector, 20, Some(window))
-                                .unwrap();
+                        let windowed = support::json(
+                            prof_mcp::query::paths_with_window_budget(
+                                &candidate,
+                                &selector,
+                                20,
+                                Some(window),
+                                prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+                            )
+                            .unwrap(),
+                        );
                         assert_eq!(full["scope_weight"], windowed["scope_weight"]);
                         let identity = |v: &serde_json::Value| {
                             v["data"]["paths"]
@@ -398,8 +445,9 @@ fn generated_stack_algebra() {
             "seed={seed}"
         );
         for metric in [TopSort::SelfWeight, TopSort::Inclusive] {
-            let diff =
-                query::diff(&baseline, &candidate, metric, DiffSort::Absolute, 200, None).unwrap();
+            let diff = support::json(
+                query::diff(&baseline, &candidate, metric, DiffSort::Absolute, 200, None).unwrap(),
+            );
             assert!(
                 diff["data"]["rows"]
                     .as_array()
@@ -408,8 +456,11 @@ fn generated_stack_algebra() {
                     .all(|row| row["delta_pp"] == 0.0)
             );
             let ranked = |p: &Profile| {
-                let top = query::top(p, metric, 200, None, None).unwrap();
-                assert_eq!(top, query::top(p, metric, 200, None, None).unwrap());
+                let top = support::json(query::top(p, metric, 200, None, None).unwrap());
+                assert_eq!(
+                    top,
+                    support::json(query::top(p, metric, 200, None, None).unwrap())
+                );
                 top["data"]["rows"]
                     .as_array()
                     .unwrap()
@@ -433,16 +484,50 @@ fn generated_stack_algebra() {
                 frame_name: Some(name.into()),
                 frame_id: None,
             };
-            let found = query::find_symbols(&baseline, name, MatchMode::Contains, 100).unwrap();
+            let found = support::json(
+                query::find_symbols(&baseline, name, MatchMode::Contains, 100).unwrap(),
+            );
             assert_eq!(
                 found,
-                query::find_symbols(&baseline, name, MatchMode::Contains, 100).unwrap()
+                support::json(
+                    query::find_symbols(&baseline, name, MatchMode::Contains, 100).unwrap()
+                )
             );
-            let paths = query::paths(&baseline, &selector, 50).unwrap();
-            assert_eq!(paths, query::paths(&baseline, &selector, 50).unwrap());
+            let paths = support::json(
+                prof_mcp::query::paths_with_window_budget(
+                    &baseline,
+                    &selector,
+                    50,
+                    None,
+                    prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES,
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                paths,
+                support::json(
+                    prof_mcp::query::paths_with_window_budget(
+                        &baseline,
+                        &selector,
+                        50,
+                        None,
+                        prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES
+                    )
+                    .unwrap()
+                )
+            );
             assert_eq!(
                 paths["data"]["paths"],
-                query::paths(&candidate, &selector, 50).unwrap()["data"]["paths"]
+                support::json(
+                    prof_mcp::query::paths_with_window_budget(
+                        &candidate,
+                        &selector,
+                        50,
+                        None,
+                        prof_mcp::query::DEFAULT_MAX_TOTAL_FRAMES
+                    )
+                    .unwrap()
+                )["data"]["paths"]
             );
             for row in paths["data"]["paths"].as_array().unwrap() {
                 assert!(
@@ -459,28 +544,32 @@ fn generated_stack_algebra() {
                 } else {
                     query::callees
                 };
-                let full = direction(&baseline, &selector, 16, 512, 0.0, None).unwrap();
-                let page = direction(&baseline, &selector, 1, 4, 0.0, None).unwrap();
+                let full =
+                    support::json(direction(&baseline, &selector, 16, 512, 0.0, None).unwrap());
+                let page = support::json(direction(&baseline, &selector, 1, 4, 0.0, None).unwrap());
                 assert_eq!(
                     page,
-                    direction(&baseline, &selector, 1, 4, 0.0, None).unwrap()
+                    support::json(direction(&baseline, &selector, 1, 4, 0.0, None).unwrap())
                 );
                 for continuation in page["data"]["continuations"].as_array().unwrap() {
-                    let path = continuation["node_path"]
+                    let path = continuation["continuation"]["cursor"]
                         .as_array()
                         .unwrap()
                         .iter()
+                        .skip(1)
                         .map(|id| id.as_u64().unwrap() as u32)
                         .collect::<Vec<_>>();
-                    let resumed = direction(
-                        &baseline,
-                        &selector,
-                        16,
-                        512,
-                        0.0,
-                        Some((&path, &baseline.source.fingerprint)),
-                    )
-                    .unwrap();
+                    let resumed = support::json(
+                        direction(
+                            &baseline,
+                            &selector,
+                            16,
+                            512,
+                            0.0,
+                            Some((&path, baseline.fingerprint())),
+                        )
+                        .unwrap(),
+                    );
                     let mut expected = &full["data"]["root"];
                     for id in &path {
                         expected = expected["children"]
@@ -498,20 +587,25 @@ fn generated_stack_algebra() {
                 }
             }
         }
-        let full = query::tree(&baseline, 0, None, 16, 512, 0.0).unwrap();
-        let page = query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap();
-        assert_eq!(page, query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap());
+        let full = support::json(query::tree(&baseline, 0, None, 16, 512, 0.0).unwrap());
+        let page = support::json(query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap());
+        assert_eq!(
+            page,
+            support::json(query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap())
+        );
         for continuation in page["data"]["continuations"].as_array().unwrap() {
             let id = continuation["node_id"].as_u64().unwrap();
-            let resumed = query::tree(
-                &baseline,
-                id as u32,
-                Some(&baseline.source.fingerprint),
-                16,
-                512,
-                0.0,
-            )
-            .unwrap();
+            let resumed = support::json(
+                query::tree(
+                    &baseline,
+                    id as u32,
+                    Some(baseline.fingerprint()),
+                    16,
+                    512,
+                    0.0,
+                )
+                .unwrap(),
+            );
             let mut expected = find_node(&full["data"]["root"], id).unwrap().clone();
             let mut actual = resumed["data"]["root"].clone();
             strip_scope(&mut expected);

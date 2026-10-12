@@ -9,8 +9,6 @@ pub fn profile(input: &str) -> Profile {
         .from_reader(
             Cursor::new(input.as_bytes()),
             PathBuf::from("/synthetic/profile.folded"),
-            input.len() as u64,
-            Some(1),
         )
         .expect("synthetic profile must parse")
 }
@@ -22,3 +20,7 @@ pub fn frame(profile: &Profile, name: &str) -> u32 {
 pub const DIAMOND: &str = "root;A;X 20\nroot;B;X 30\n";
 pub const SHARED_CALLEE: &str = "root;A;X;leaf1 20\nroot;B;X;leaf2 30\n";
 pub const RECURSION: &str = "root;foo;foo;bar 10\n";
+
+pub fn json(value: impl serde::Serialize) -> serde_json::Value {
+    serde_json::to_value(value).expect("query output serializes")
+}

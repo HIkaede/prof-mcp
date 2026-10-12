@@ -118,7 +118,7 @@ async fn refresh_replaced_alias() {
     registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
     let replaced = cache.load(None).await.unwrap();
     assert!(!Arc::ptr_eq(&base.profile, &replaced.profile));
-    assert_eq!(replaced.profile.total_weight, 7);
+    assert_eq!(replaced.profile.total_weight(), 7);
     assert!(replaced.profile.frame_id("new").is_some());
     assert!(Arc::ptr_eq(
         &base.profile,
@@ -176,7 +176,7 @@ async fn concurrent_loads_share_profile() {
         let profile = task.await.unwrap();
         assert!(Arc::ptr_eq(&first, &profile));
     }
-    assert_eq!(first.total_weight, 20_000);
+    assert_eq!(first.total_weight(), 20_000);
 }
 
 #[tokio::test]
@@ -192,4 +192,43 @@ async fn zero_byte_budget_disables_cache() {
     let first = cache.load(None).await.unwrap();
     let second = cache.load(None).await.unwrap();
     assert!(!Arc::ptr_eq(&first.profile, &second.profile));
+}
+
+#[tokio::test]
+async fn warm_cache_rejects_same_size_blob_changes() {
+    use std::time::{Duration, UNIX_EPOCH};
+    for change in ["submillisecond", "preserved_mtime", "replaced_inode"] {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("input.folded");
+        fs::write(&source, "root;good 1\n").unwrap();
+        registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+        let blob = registry::resolve(workspace.path(), None).unwrap().path;
+        let stamp = UNIX_EPOCH + Duration::new(1_800_000_000, 100_100);
+        fs::File::open(&blob).unwrap().set_modified(stamp).unwrap();
+        let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
+        cache.load(None).await.unwrap();
+        let destination = if change == "replaced_inode" {
+            source.as_path()
+        } else {
+            blob.as_path()
+        };
+        fs::write(destination, "root;evil 1\n").unwrap();
+        let modified = if change == "submillisecond" {
+            stamp + Duration::from_nanos(100)
+        } else {
+            stamp
+        };
+        fs::File::open(destination)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        if change == "replaced_inode" {
+            fs::rename(&source, &blob).unwrap();
+        }
+        assert_eq!(
+            cache.load(None).await.unwrap_err().code,
+            "registry_corrupt",
+            "{change}"
+        );
+    }
 }
