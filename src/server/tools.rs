@@ -61,15 +61,20 @@ impl ProfileServer {
         Parameters(input): Parameters<TopInput>,
     ) -> CallToolResult {
         let frame = input.frame.map(FrameSelector::from);
+        let workspace = self.top_workspace.clone();
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
-            query::top(
+            let mut workspace = workspace.blocking_lock();
+            let result = query::top_with_workspace(
                 &loaded.profile,
                 input.metric,
                 input.limit,
                 frame.as_ref(),
                 input.name_regex.as_deref(),
+                &mut workspace,
             )
-            .and_then(|value| serialize(tag_alias(value, &loaded.alias)))
+            .and_then(|value| serialize(tag_alias(value, &loaded.alias)));
+            workspace.release_oversized();
+            result
         })
         .await
     }
@@ -92,7 +97,10 @@ impl ProfileServer {
                 &loaded.profile.source.fingerprint,
                 input.continuation.as_ref(),
             )?;
-            let root = input.continuation.as_ref().map_or(0, |c| c.cursor[0]);
+            let root = input
+                .continuation
+                .as_ref()
+                .map_or([0, 0], |c| [c.cursor[0], c.cursor[1]]);
             query::tree(
                 &loaded.profile,
                 root,
@@ -230,7 +238,7 @@ fn continuation_profile(
         return Ok(profile);
     };
     let valid_cursor = match tool {
-        ContinuationTool::Tree => c.cursor.len() == 1,
+        ContinuationTool::Tree => c.cursor.len() == 2,
         ContinuationTool::Callers | ContinuationTool::Callees => {
             (2..=4097).contains(&c.cursor.len())
         }

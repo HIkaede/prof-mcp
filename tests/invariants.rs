@@ -57,15 +57,6 @@ fn assert_invariants(profile: &Profile) {
         profile.total_weight()
     );
     assert_eq!(
-        profile.postings().offsets().len(),
-        profile.frames().len() + 1
-    );
-    assert_eq!(profile.postings().offsets()[0], 0);
-    assert_eq!(
-        *profile.postings().offsets().last().unwrap() as usize,
-        profile.postings().entries().len()
-    );
-    assert_eq!(
         profile.cct().child_offsets().len(),
         profile.cct().nodes().len() + 1
     );
@@ -80,6 +71,17 @@ fn assert_invariants(profile: &Profile) {
     );
     assert_eq!(profile.root().total_weight(), profile.total_weight());
     for (id, node) in profile.cct().nodes().iter().enumerate() {
+        if id != 0 {
+            assert!(node.label_len() > 0);
+            assert!(
+                profile.cct().self_weight(id as u32) > 0
+                    || profile.cct().children(id as u32).len() != 1
+            );
+            assert!(
+                (node.label_offset() as usize + node.label_len() as usize)
+                    <= profile.stacks().frames().len()
+            );
+        }
         assert_eq!(
             node.total_weight(),
             profile.cct().self_weight(id as u32)
@@ -183,15 +185,25 @@ fn assert_reference_cct(profile: &Profile) {
         }
         nodes[node].self_weight += stack.weight;
     }
-    assert_eq!(nodes.len(), profile.cct().nodes().len());
-    for (id, expected) in nodes.iter().enumerate() {
-        let actual = &profile.cct().nodes()[id];
+    let mut pending = vec![(0u32, 0u32, 0usize)];
+    let mut visited = 0;
+    while let Some((compact_id, offset, reference_id)) = pending.pop() {
+        visited += 1;
+        let actual = &profile.cct().nodes()[compact_id as usize];
+        let expected = &nodes[reference_id];
+        let frame = if compact_id == 0 {
+            None
+        } else {
+            Some(profile.stacks().frames()[(actual.label_offset() + offset) as usize])
+        };
+        let inner = compact_id != 0 && offset + 1 < actual.label_len();
+        let self_weight = if inner {
+            0
+        } else {
+            profile.cct().self_weight(compact_id)
+        };
         assert_eq!(
-            (
-                actual.frame(),
-                profile.cct().self_weight(id as u32),
-                actual.total_weight()
-            ),
+            (frame, self_weight, actual.total_weight()),
             (expected.frame, expected.self_weight, expected.total_weight)
         );
         let mut children: Vec<_> = expected.children.values().copied().collect();
@@ -200,15 +212,25 @@ fn assert_reference_cct(profile: &Profile) {
             let bn = &nodes[*b as usize];
             bn.total_weight
                 .cmp(&an.total_weight)
-                .then_with(|| {
-                    profile
-                        .frame_name(an.frame.unwrap())
-                        .cmp(profile.frame_name(bn.frame.unwrap()))
-                })
-                .then(a.cmp(b))
+                .then(an.frame.cmp(&bn.frame))
         });
-        assert_eq!(profile.cct().children(id as u32), children);
+        let actual_children = if inner {
+            vec![(compact_id, offset + 1)]
+        } else {
+            profile
+                .cct()
+                .children(compact_id)
+                .iter()
+                .map(|&id| (id, 0))
+                .collect()
+        };
+        assert_eq!(actual_children.len(), children.len());
+        for ((id, pos), expected) in actual_children.into_iter().zip(children) {
+            pending.push((id, pos, expected as usize));
+        }
     }
+    assert_eq!(visited, nodes.len());
+    assert!(profile.cct().nodes().len() <= (2 * profile.stacks().len()).max(1));
 }
 
 #[test]
@@ -221,6 +243,13 @@ fn compact_layout_handles_empty_deep_and_prefix_stacks() {
     assert_eq!(profile.stacks().stack(0).frames.len(), 1);
     assert_eq!(profile.recursive_frames()[0].max_occurrences, 4096);
     assert_eq!(profile.recursive_frames()[0].affected_weight, 7);
+}
+
+#[test]
+fn compact_cct_splits_nested_lcp_boundaries() {
+    assert_invariants(&support::profile(
+        "a;b;c;d;e 2\na;b;c;d;f 2\na;b;c;x 2\na;b;y 2\na;z 2\nk;l 2\n",
+    ));
 }
 
 #[test]
@@ -399,8 +428,8 @@ fn strip_scope(value: &mut serde_json::Value) {
     }
 }
 
-fn find_node(value: &serde_json::Value, id: u64) -> Option<&serde_json::Value> {
-    if value["node_id"] == id {
+fn find_node(value: &serde_json::Value, id: [u32; 2]) -> Option<&serde_json::Value> {
+    if value["node_id"] == serde_json::json!(id) {
         return Some(value);
     }
     value["children"]
@@ -587,24 +616,16 @@ fn generated_stack_algebra() {
                 }
             }
         }
-        let full = support::json(query::tree(&baseline, 0, None, 16, 512, 0.0).unwrap());
-        let page = support::json(query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap());
+        let full = support::json(query::tree(&baseline, [0, 0], None, 16, 512, 0.0).unwrap());
+        let page = support::json(query::tree(&baseline, [0, 0], None, 2, 8, 0.0).unwrap());
         assert_eq!(
             page,
-            support::json(query::tree(&baseline, 0, None, 2, 8, 0.0).unwrap())
+            support::json(query::tree(&baseline, [0, 0], None, 2, 8, 0.0).unwrap())
         );
         for continuation in page["data"]["continuations"].as_array().unwrap() {
-            let id = continuation["node_id"].as_u64().unwrap();
+            let id: [u32; 2] = serde_json::from_value(continuation["node_id"].clone()).unwrap();
             let resumed = support::json(
-                query::tree(
-                    &baseline,
-                    id as u32,
-                    Some(baseline.fingerprint()),
-                    16,
-                    512,
-                    0.0,
-                )
-                .unwrap(),
+                query::tree(&baseline, id, Some(baseline.fingerprint()), 16, 512, 0.0).unwrap(),
             );
             let mut expected = find_node(&full["data"]["root"], id).unwrap().clone();
             let mut actual = resumed["data"]["root"].clone();

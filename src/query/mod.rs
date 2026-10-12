@@ -15,7 +15,7 @@ pub(crate) use crate::output::{
     TreeTruncation, TruncationReason, frame_row, frame_row_with_percent_weight, percent,
     typed_envelope as envelope,
 };
-pub(crate) use crate::profile::{FrameId, FrameStats, NodeId, Profile};
+pub(crate) use crate::profile::{FrameId, FrameStats, Profile};
 
 mod diff;
 mod direction;
@@ -30,7 +30,7 @@ pub use direction::{callees, callers};
 pub use paths::paths_with_window_budget;
 pub use summary::summary;
 pub use symbols::find_symbols;
-pub use top::top;
+pub use top::{TopWorkspace, top, top_with_workspace};
 pub use tree::tree;
 
 #[derive(Clone, Debug, Default)]

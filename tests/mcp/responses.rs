@@ -48,7 +48,7 @@ struct TopData {
 #[allow(dead_code)]
 #[derive(Deserialize)]
 struct TreeNode {
-    node_id: Option<u32>,
+    node_id: Option<[u32; 2]>,
     children: Vec<TreeNode>,
 }
 
@@ -246,7 +246,7 @@ async fn deserialize_tool_responses() {
                     let typed: TypedEnvelope<TreeData> =
                         serde_json::from_value(structured).unwrap();
                     assert_eq!(typed.schema_version, "2");
-                    assert_eq!(typed.data.root.node_id, Some(0));
+                    assert_eq!(typed.data.root.node_id, Some([0, 0]));
                 }
                 "profile_callers" | "profile_callees" => {
                     let typed: TypedEnvelope<DirectionData> =
@@ -600,10 +600,7 @@ async fn roundtrip() {
             assert_eq!(continuation["profile"], "base");
             assert_eq!(continuation["tool"], tool);
             assert_eq!(continuation["fingerprint"], first["profile"]["fingerprint"]);
-            assert_eq!(
-                continuation["cursor"].as_array().unwrap().len(),
-                if tool == "profile_tree" { 1 } else { 2 }
-            );
+            assert_eq!(continuation["cursor"].as_array().unwrap().len(), 2);
             registry::set_active(workspace.path(), "other").unwrap();
             let resumed = invoke(
                 &client,
@@ -637,7 +634,10 @@ async fn roundtrip() {
                         .is_empty()
                 );
                 if tool == "profile_tree" {
-                    assert_eq!(current["data"]["root"]["node_id"], cursor[0]);
+                    assert_eq!(
+                        current["data"]["root"]["node_id"],
+                        serde_json::json!(cursor)
+                    );
                 } else {
                     assert_eq!(current["data"]["frame"]["frame_id"], cursor[0]);
                     assert_eq!(current["data"]["root"]["frame_id"], *cursor.last().unwrap());
@@ -651,8 +651,8 @@ async fn roundtrip() {
                 let next = &rows[0]["continuation"];
                 assert_eq!(rows[0]["reason"], "depth_limit");
                 if tool == "profile_tree" {
-                    assert_eq!(next["cursor"].as_array().unwrap().len(), 1);
-                    assert_ne!(next["cursor"][0], cursor[0]);
+                    assert_eq!(next["cursor"].as_array().unwrap().len(), 2);
+                    assert_ne!(next["cursor"], serde_json::json!(cursor));
                 } else {
                     let next_cursor = next["cursor"].as_array().unwrap();
                     assert_eq!(&next_cursor[..cursor.len()], cursor.as_slice());
@@ -731,11 +731,7 @@ async fn invalid() {
             let mut empty_cursor = token.clone();
             empty_cursor["cursor"] = serde_json::json!([]);
             let mut wrong_shape = token.clone();
-            wrong_shape["cursor"] = if tool == "profile_tree" {
-                serde_json::json!([0, 1])
-            } else {
-                serde_json::json!([0])
-            };
+            wrong_shape["cursor"] = serde_json::json!([0]);
             for arguments in [
                 serde_json::json!({"continuation":wrong_tool}),
                 serde_json::json!({"continuation":empty_cursor}),

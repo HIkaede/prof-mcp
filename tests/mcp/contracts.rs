@@ -164,7 +164,7 @@ async fn tool_schemas() {
             for field in ["profile", "fingerprint", "tool", "cursor"] {
                 assert!(required.contains(&serde_json::json!(field)));
             }
-            assert_eq!(continuation["properties"]["cursor"]["minItems"], 1);
+            assert_eq!(continuation["properties"]["cursor"]["minItems"], 2);
             assert_eq!(continuation["properties"]["cursor"]["maxItems"], 4097);
             let kinds = input["$defs"]["ContinuationTool"]["enum"]
                 .as_array()

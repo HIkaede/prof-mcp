@@ -184,7 +184,7 @@ pub type PathsOutput<'a> = OutputEnvelope<'a, PathsData<'a>>;
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 pub struct TreeNode<'a> {
-    pub node_id: Option<u32>,
+    pub node_id: Option<[u32; 2]>,
     pub frame_id: Option<u32>,
     pub name: Option<&'a str>,
     pub self_weight: u64,
@@ -198,7 +198,7 @@ pub struct TreeNode<'a> {
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 pub struct TreeContinuation<'a> {
-    pub node_id: u32,
+    pub node_id: [u32; 2],
     pub frame_id: u32,
     pub name: &'a str,
     pub reason: TreeTruncation,
@@ -288,7 +288,7 @@ pub struct Continuation {
     pub profile: String,
     pub fingerprint: String,
     pub tool: ContinuationTool,
-    #[schemars(length(min = 1, max = 4097))]
+    #[schemars(length(min = 2, max = 4097))]
     pub cursor: Vec<u32>,
 }
 

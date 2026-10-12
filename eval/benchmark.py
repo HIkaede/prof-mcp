@@ -63,7 +63,7 @@ def timed(command, cwd, env=None):
                 "peak_rss_kib": int(rss.read_text().strip())}, result.stdout
 
 
-def mcp(binary, workspace, repeats):
+def mcp(binary, workspace, repeats, tools=None, prime_aliases=("candidate", "changed"), capture=False, continuation_check_limit=128):
     with tempfile.TemporaryDirectory() as directory:
         rss = Path(directory) / "rss"
         process = subprocess.Popen(["/usr/bin/time", "-f", "%M", "-o", str(rss), str(binary), "serve"],
@@ -82,7 +82,7 @@ def mcp(binary, workspace, repeats):
                     raise RuntimeError("MCP server closed stdout")
                 response = json.loads(line)
                 if response.get("id") == identifier:
-                    if "error" in response or response["result"].get("isError"):
+                    if "error" in response or (response["result"].get("isError") and not capture):
                         raise RuntimeError(response)
                     return len(line.encode()), response["result"]
         def timeout(_signum, _frame):
@@ -101,16 +101,41 @@ def mcp(binary, workspace, repeats):
             schemas = {tool["name"]: len(json.dumps(tool["outputSchema"], ensure_ascii=False, separators=(",", ":")).encode())
                        for tool in listing["tools"]}
             # Prime every blob before warm measurements.
-            for alias in ["candidate", "changed"]:
+            for alias in prime_aliases:
                 request("tools/call", {"name": "profile_summary", "arguments": {"profile": alias}})
             rows = []
-            for name, tool, arguments in [(name, name, arguments) for name, arguments in TOOLS] + EXTRA_TOOLS:
+            outputs = {}
+            for name, tool, arguments in tools if tools is not None else [(name, name, arguments) for name, arguments in TOOLS] + EXTRA_TOOLS:
                 elapsed = 0.0
                 for _ in range(repeats):
                     started = time.perf_counter()
                     size, result = request("tools/call", {"name": "profile_" + tool, "arguments": arguments})
                     elapsed += time.perf_counter() - started
-                    assert result["structuredContent"]["schema_version"] == "2"
+                    if not result.get("isError"):
+                        assert result["structuredContent"]["schema_version"] == "2"
+                if result.get("isError"):
+                    outputs[name] = {"isError": True, "error": json.loads(result["content"][0]["text"])}
+                    rows.append({"operation": name, "roundtrip_seconds": elapsed / repeats,
+                                 "wire_response_bytes": size, "isError": True, "error": outputs[name]["error"]})
+                    continue
+                if capture:
+                    outputs[name] = result["structuredContent"]
+                    continuations = []
+                    def collect(value):
+                        if isinstance(value, dict):
+                            if isinstance(value.get("continuation"), dict):
+                                continuations.append(value["continuation"])
+                            for key, child in value.items():
+                                if key != "continuation":
+                                    collect(child)
+                        elif isinstance(value, list):
+                            for child in value:
+                                collect(child)
+                    collect(outputs[name])
+                    for index, continuation in enumerate(continuations[:continuation_check_limit]):
+                        _, resumed = request("tools/call", {"name": "profile_" + tool, "arguments": {
+                            "continuation": continuation, "max_depth": 4, "max_nodes": 32, "min_scope_percent": 0.0}})
+                        outputs[f"{name}_resume_{index}"] = resumed["structuredContent"] if "structuredContent" in resumed else {"isError": True, "error": json.loads(resumed["content"][0]["text"])}
                 rows.append({"operation": name, "roundtrip_seconds": elapsed / repeats,
                              "wire_response_bytes": size,
                              "structured_content_bytes": len(json.dumps(result["structuredContent"], ensure_ascii=False, separators=(",", ":")).encode()),
@@ -127,7 +152,7 @@ def mcp(binary, workspace, repeats):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
         return {"cold_summary_seconds": cold, "tools_list_wire_bytes": tools_list_bytes, "warm": rows,
-                "process_peak_rss_kib": int(rss.read_text().strip())}
+                "process_peak_rss_kib": int(rss.read_text().strip()), **({"outputs": outputs} if capture else {})}
 
 
 def self_check():

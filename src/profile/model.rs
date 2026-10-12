@@ -70,9 +70,23 @@ impl StackTable {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ScopeDescriptor {
+    pub(crate) start: u32,
+    pub(crate) count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeKind {
+    All,
+    One,
+    General,
+}
+
 #[derive(Debug, Default)]
 pub struct PostingTable {
-    pub(crate) offsets: Box<[u32]>,
+    pub(crate) scopes: Box<[ScopeDescriptor]>,
+    pub(crate) ranked_stacks: Box<[StackId]>,
     pub(crate) entries: Box<[StackId]>,
     pub(crate) position_offsets: Box<[u32]>,
     pub(crate) constant_positions: Box<[u32]>,
@@ -80,6 +94,13 @@ pub struct PostingTable {
 }
 
 impl PostingTable {
+    pub fn constant_positions_pair(&self, frame: usize) -> Option<(u16, u16)> {
+        if self.position_offsets[frame] != self.position_offsets[frame + 1] {
+            return None;
+        }
+        let packed = self.constant_positions[frame];
+        Some((packed as u16, (packed >> 16) as u16))
+    }
     pub fn positions(&self, frame: usize, posting_index: usize) -> (u16, u16) {
         let start = self.position_offsets[frame];
         let packed = if start == self.position_offsets[frame + 1] {
@@ -98,18 +119,31 @@ impl PostingTable {
     pub fn variable_positions(&self) -> &[u32] {
         &self.variable_positions
     }
-    pub fn iter(&self) -> impl Iterator<Item = &[StackId]> {
-        self.offsets
-            .windows(2)
-            .map(|range| &self.entries[range[0] as usize..range[1] as usize])
+    pub fn scope_kind(&self, frame: usize) -> ScopeKind {
+        let scope = &self.scopes[frame];
+        if scope.count as usize == self.ranked_stacks.len() {
+            ScopeKind::All
+        } else if scope.count == 1 {
+            ScopeKind::One
+        } else {
+            ScopeKind::General
+        }
     }
-}
-
-impl std::ops::Index<usize> for PostingTable {
-    type Output = [StackId];
-
-    fn index(&self, frame: usize) -> &Self::Output {
-        &self.entries[self.offsets[frame] as usize..self.offsets[frame + 1] as usize]
+    pub fn ranked(&self, frame: usize) -> &[StackId] {
+        let scope = &self.scopes[frame];
+        match self.scope_kind(frame) {
+            ScopeKind::All => &self.ranked_stacks,
+            ScopeKind::One => std::slice::from_ref(&scope.start),
+            ScopeKind::General => {
+                &self.entries[scope.start as usize..scope.start as usize + scope.count as usize]
+            }
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &[StackId]> {
+        (0..self.scopes.len()).map(|frame| self.ranked(frame))
+    }
+    pub fn ranked_stacks(&self) -> &[StackId] {
+        &self.ranked_stacks
     }
 }
 
@@ -122,7 +156,8 @@ pub struct FrameStats {
 
 #[derive(Clone, Debug)]
 pub struct ContextNode {
-    pub(crate) frame: Option<FrameId>,
+    pub(crate) label_offset: u32,
+    pub(crate) label_len: u32,
     pub(crate) total_weight: u64,
 }
 
@@ -203,8 +238,9 @@ impl Profile {
             stack_frames_bytes: std::mem::size_of_val(&*self.stacks.frames),
             stack_weights_bytes: std::mem::size_of_val(&*self.stacks.weights),
             frame_stats_bytes: std::mem::size_of_val(&*self.frame_stats),
-            posting_offsets_bytes: std::mem::size_of_val(&*self.frame_to_stacks.offsets),
-            posting_entries_bytes: std::mem::size_of_val(&*self.frame_to_stacks.entries),
+            posting_offsets_bytes: std::mem::size_of_val(&*self.frame_to_stacks.scopes),
+            posting_entries_bytes: std::mem::size_of_val(&*self.frame_to_stacks.entries)
+                + std::mem::size_of_val(&*self.frame_to_stacks.ranked_stacks),
             posting_positions_bytes: std::mem::size_of_val(&*self.frame_to_stacks.position_offsets)
                 + std::mem::size_of_val(&*self.frame_to_stacks.constant_positions)
                 + std::mem::size_of_val(&*self.frame_to_stacks.variable_positions),
@@ -280,16 +316,16 @@ impl StackTable {
     }
 }
 impl PostingTable {
-    pub fn offsets(&self) -> &[u32] {
-        &self.offsets
-    }
     pub fn entries(&self) -> &[StackId] {
         &self.entries
     }
 }
 impl ContextNode {
-    pub fn frame(&self) -> Option<FrameId> {
-        self.frame
+    pub fn label_offset(&self) -> u32 {
+        self.label_offset
+    }
+    pub fn label_len(&self) -> u32 {
+        self.label_len
     }
     pub fn total_weight(&self) -> u64 {
         self.total_weight

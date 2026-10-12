@@ -19,7 +19,7 @@ pub fn paths_with_window_budget<'p>(
     check_frame_window(window)?;
     check_limit(max_total_frames, 1, MAX_TOTAL_FRAMES, "max_total_frames")?;
     let frame = resolve_selector(profile, selector)?;
-    let stack_ids = &profile.frame_to_stacks[frame as usize];
+    let stack_ids = profile.frame_to_stacks.ranked(frame as usize);
     let scope = profile.frame_stats[frame as usize].inclusive_weight;
     let available = stack_ids.len();
     let stacks = &stack_ids[..limit.min(stack_ids.len())];

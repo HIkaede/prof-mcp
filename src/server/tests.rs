@@ -64,10 +64,12 @@ async fn query_worker() {
         });
         let client = ().serve(client_transport).await.unwrap();
         let worker = server.clone();
+        let workspace = server.top_workspace.clone();
         let (started, ready) = tokio::sync::oneshot::channel();
         let request = tokio::spawn(async move {
             worker
                 .query(async { Ok(()) }, move |()| {
+                    let _workspace = workspace.blocking_lock();
                     started.send(()).unwrap();
                     let _ = wait.recv();
                     Ok(json!({}))
@@ -101,6 +103,7 @@ async fn query_worker() {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         assert_eq!(server.query_gate.available_permits(), 0);
+        assert!(server.top_workspace.try_lock().is_err());
         assert!(matches!(
             loaded.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -109,6 +112,7 @@ async fn query_worker() {
         loaded.await.unwrap();
         assert_ne!(waiting.await.unwrap().is_error, Some(true));
         let _permit = server.query_gate.acquire().await.unwrap();
+        assert!(server.top_workspace.try_lock().is_ok());
         client.cancel().await.unwrap();
         server_task.await.unwrap().unwrap();
     })

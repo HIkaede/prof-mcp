@@ -156,7 +156,7 @@ fn model_limits() {
         .unwrap();
     assert_eq!(profile.total_weight(), 5);
     assert_eq!(profile.stacks().len(), 1);
-    assert_eq!(profile.cct().nodes().len(), 3);
+    assert_eq!(profile.cct().nodes().len(), 2);
     assert!(profile.estimated_size_bytes() > input.len());
 
     for (limits, resource) in [
@@ -241,7 +241,94 @@ fn posting_positions_compress_constants_and_compact_variable_ranges() {
     assert_eq!(postings.positions(leaf, 1), (3, 3));
     assert_eq!(postings.positions(leaf, 2), (2, 2));
     let root = profile.frame_id("root").unwrap() as usize;
-    for index in 0..postings[root].len() {
+    for index in 0..postings.ranked(root).len() {
         assert_eq!(postings.positions(root, index), (0, 0));
     }
+}
+
+#[test]
+fn scope_classes_share_all_inline_one_and_rank_variable_positions() {
+    use prof_mcp::profile::ScopeKind;
+    let profile = parse(b"a;b;x 2\nb;a;y 9\na;b;z 5\n").unwrap();
+    let postings = profile.postings();
+    let a = profile.frame_id("a").unwrap() as usize;
+    let b = profile.frame_id("b").unwrap() as usize;
+    assert_eq!(postings.scope_kind(a), ScopeKind::All);
+    assert_eq!(postings.scope_kind(b), ScopeKind::All);
+    assert_eq!(postings.ranked(a), postings.ranked_stacks());
+    assert_eq!(postings.ranked(a), postings.ranked(b));
+    assert!(postings.entries().is_empty());
+    assert_eq!(postings.positions(a, 0), (1, 1));
+    assert_eq!(postings.positions(b, 0), (0, 0));
+    assert_eq!(postings.positions(a, 1), (0, 0));
+    for name in ["x", "y", "z"] {
+        let frame = profile.frame_id(name).unwrap() as usize;
+        assert_eq!(postings.scope_kind(frame), ScopeKind::One);
+        assert_eq!(postings.ranked(frame).len(), 1);
+    }
+    let profile = parse(b"a;a 1\na;x 2\nx;y 3\n").unwrap();
+    assert!(profile.postings().ranked_stacks().is_empty());
+    let a = profile.frame_id("a").unwrap() as usize;
+    assert_eq!(profile.postings().scope_kind(a), ScopeKind::General);
+    assert_eq!(profile.postings().positions(a, 0), (0, 0));
+    assert_eq!(profile.postings().positions(a, 1), (0, 1));
+    let profile = parse(b"a;a 4\n").unwrap();
+    assert_eq!(profile.postings().scope_kind(0), ScopeKind::All);
+    assert!(profile.postings().entries().is_empty());
+}
+
+#[test]
+fn prefix_events_keep_recursive_and_terminal_weights() {
+    let profile = parse(b"a 1\na;b;a 2\na;b;c 3\nx;b 4\n").unwrap();
+    for (name, inclusive, count, own) in [
+        ("a", 6, 3, 3),
+        ("b", 9, 3, 4),
+        ("c", 3, 1, 3),
+        ("x", 4, 1, 0),
+    ] {
+        let stats = &profile.frame_stats()[profile.frame_id(name).unwrap() as usize];
+        assert_eq!(
+            (stats.inclusive_weight, stats.stack_count, stats.self_weight),
+            (inclusive, count, own)
+        );
+    }
+    assert_eq!(profile.recursive_frames()[0].affected_weight, 2);
+    assert_eq!(profile.recursive_frames()[0].max_occurrences, 2);
+}
+
+#[test]
+fn prefix_event_recursion_matches_stack_oracle() {
+    use std::collections::HashMap;
+    let mut input = String::new();
+    for id in 0..300usize {
+        let depth = 1 + id % 13;
+        let names = (0..depth)
+            .map(|level| format!("f{}", (id * 17 + level * level) % 11))
+            .collect::<Vec<_>>();
+        input.push_str(&format!("{} {}\n", names.join(";"), 1 + id % 9));
+    }
+    let profile = parse(input.as_bytes()).unwrap();
+    let mut expected = HashMap::<u32, (u64, u32)>::new();
+    for stack in profile.stacks().iter() {
+        let mut counts = HashMap::<u32, u32>::new();
+        for &frame in stack.frames {
+            *counts.entry(frame).or_default() += 1;
+        }
+        for (frame, count) in counts {
+            if count > 1 {
+                let row = expected.entry(frame).or_default();
+                row.0 += stack.weight;
+                row.1 = row.1.max(count);
+            }
+        }
+    }
+    let mut expected = expected.into_iter().collect::<Vec<_>>();
+    expected.sort_unstable_by_key(|&(frame, (weight, _))| (std::cmp::Reverse(weight), frame));
+    expected.truncate(5);
+    let actual = profile
+        .recursive_frames()
+        .iter()
+        .map(|row| (row.frame, (row.affected_weight, row.max_occurrences)))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }

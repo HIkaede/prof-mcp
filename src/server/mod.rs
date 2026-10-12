@@ -34,6 +34,7 @@ use crate::error::ApiError;
 pub struct ProfileServer {
     cache: Arc<ProfileCache>,
     query_gate: Arc<tokio::sync::Semaphore>,
+    top_workspace: Arc<tokio::sync::Mutex<crate::query::TopWorkspace>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -61,6 +62,9 @@ impl ProfileServer {
         Ok(Self {
             cache,
             query_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            top_workspace: Arc::new(tokio::sync::Mutex::new(
+                crate::query::TopWorkspace::default(),
+            )),
             tool_router: Self::build_tool_router(),
         })
     }

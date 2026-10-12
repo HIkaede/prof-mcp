@@ -196,7 +196,10 @@ async fn zero_byte_budget_disables_cache() {
 
 #[tokio::test]
 async fn warm_cache_rejects_same_size_blob_changes() {
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::{
+        os::unix::fs::MetadataExt,
+        time::{Duration, Instant, UNIX_EPOCH},
+    };
     for change in ["submillisecond", "preserved_mtime", "replaced_inode"] {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("input.folded");
@@ -207,26 +210,43 @@ async fn warm_cache_rejects_same_size_blob_changes() {
         fs::File::open(&blob).unwrap().set_modified(stamp).unwrap();
         let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
         cache.load(None).await.unwrap();
+        let original_metadata = fs::metadata(&blob).unwrap();
         let destination = if change == "replaced_inode" {
             source.as_path()
         } else {
             blob.as_path()
         };
-        fs::write(destination, "root;evil 1\n").unwrap();
         let modified = if change == "submillisecond" {
             stamp + Duration::from_nanos(100)
         } else {
             stamp
         };
-        fs::File::open(destination)
-            .unwrap()
-            .set_modified(modified)
-            .unwrap();
+        let started = Instant::now();
+        loop {
+            fs::write(destination, "root;evil 1\n").unwrap();
+            fs::File::open(destination)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+            let metadata = fs::metadata(destination).unwrap();
+            // Older kernels can give consecutive writes the same ctime tick.
+            if change != "preserved_mtime"
+                || (metadata.ctime(), metadata.ctime_nsec())
+                    != (original_metadata.ctime(), original_metadata.ctime_nsec())
+            {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "ctime did not advance"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         if change == "replaced_inode" {
             fs::rename(&source, &blob).unwrap();
         }
         assert_eq!(
-            cache.load(None).await.unwrap_err().code,
+            cache.load(None).await.expect_err(change).code,
             "registry_corrupt",
             "{change}"
         );

@@ -11,15 +11,15 @@ fn breakdown_counts_frozen_arrays() {
     assert_eq!(before.stack_offsets_bytes, 3 * 4);
     assert_eq!(before.stack_frames_bytes, 5 * 4);
     assert_eq!(before.stack_weights_bytes, 2 * 8);
-    assert_eq!(before.posting_offsets_bytes, 4 * 4);
-    assert_eq!(before.posting_entries_bytes, 4 * 4);
+    assert_eq!(before.posting_offsets_bytes, 3 * 8);
+    assert_eq!(before.posting_entries_bytes, 2 * 4);
     assert_eq!(before.posting_positions_bytes, 4 * 4 + 3 * 4);
     assert_eq!(
         before.cct_nodes_bytes,
-        5 * std::mem::size_of::<ContextNode>()
+        4 * std::mem::size_of::<ContextNode>()
     );
-    assert_eq!(before.cct_offsets_bytes, 6 * 4);
-    assert_eq!(before.cct_edges_bytes, 4 * 4);
+    assert_eq!(before.cct_offsets_bytes, 5 * 4);
+    assert_eq!(before.cct_edges_bytes, 3 * 4);
     assert_eq!(before.top_rankings_bytes, 3 * 8);
     assert_eq!(
         before.recursion_bytes,
@@ -42,14 +42,14 @@ fn empty_profile_still_counts_root_and_sentinels() {
     assert_eq!(bytes.frame_name_bytes, 0);
     assert_eq!(bytes.frame_offsets_bytes, 4);
     assert_eq!(bytes.stack_offsets_bytes, 4);
-    assert_eq!(bytes.posting_offsets_bytes, 4);
+    assert_eq!(bytes.posting_offsets_bytes, 0);
     assert_eq!(bytes.posting_positions_bytes, 4);
     assert_eq!(bytes.cct_nodes_bytes, std::mem::size_of::<ContextNode>());
     assert_eq!(bytes.cct_offsets_bytes, 8);
     assert_eq!(bytes.cct_edges_bytes, 0);
     assert_eq!(
         bytes.total_bytes,
-        bytes.metadata_bytes + 24 + bytes.cct_nodes_bytes
+        bytes.metadata_bytes + 20 + bytes.cct_nodes_bytes
     );
 }
 
