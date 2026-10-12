@@ -39,7 +39,7 @@ fuzz_target!(|input: &[u8]| {
                     .all(|stats| stats.inclusive_weight <= left.total_weight)
             );
             assert!(left.max_depth <= limits.max_depth);
-            assert!(left.source.byte_len <= limits.max_file_bytes);
+            assert!(input.len() as u64 <= limits.max_file_bytes);
         }
         (Err(left), Err(right)) => assert_eq!(left.to_string(), right.to_string()),
         _ => panic!("nondeterministic parser result"),

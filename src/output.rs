@@ -31,7 +31,7 @@ pub fn profile_meta(profile: &Profile) -> Value {
 pub(crate) fn typed_envelope<T>(
     profile: &Profile,
     scope_weight: u64,
-    truncation_reasons: Vec<Value>,
+    truncation_reasons: Vec<TruncationReason>,
     warnings: Vec<String>,
     data: T,
 ) -> OutputEnvelope<T> {
@@ -40,21 +40,7 @@ pub(crate) fn typed_envelope<T>(
         profile: output_profile(profile),
         scope_weight,
         truncated: !truncation_reasons.is_empty(),
-        truncation_reasons: truncation_reasons
-            .into_iter()
-            .map(|reason| {
-                let Value::Object(mut details) = reason else {
-                    unreachable!("static truncation reason")
-                };
-                let Value::String(kind) = details.remove("kind").expect("reason kind") else {
-                    unreachable!("static kind")
-                };
-                TruncationReason {
-                    kind,
-                    details: details.into_iter().collect(),
-                }
-            })
-            .collect(),
+        truncation_reasons,
         warnings,
         data,
     }

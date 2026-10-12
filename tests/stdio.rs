@@ -165,7 +165,7 @@ fn stdio_protocol() {
     );
     assert_eq!(missing["isError"], true);
     assert_eq!(
-        missing["structuredContent"]["code"],
+        serde_json::from_str::<Value>(missing["content"][0]["text"].as_str().unwrap()).unwrap()["code"],
         "workspace_not_registered"
     );
 

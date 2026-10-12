@@ -264,6 +264,20 @@ fn regex_syntax_and_unicode() {
 }
 
 #[test]
+fn regex_compiled_expansion_is_bounded_for_find_and_top() {
+    let profile = support::profile("root;alpha 3\n");
+    let pattern = r"\w{1000}";
+    for error in [
+        query::find_symbols(&profile, pattern, MatchMode::Regex, 20).unwrap_err(),
+        query::top(&profile, TopSort::SelfWeight, 20, None, Some(pattern)).unwrap_err(),
+    ] {
+        assert_eq!(error.code, "invalid_regex");
+        assert_eq!(error.details["pattern"], pattern);
+        assert!(error.message.contains("size limit"), "{}", error.message);
+    }
+}
+
+#[test]
 fn summary_names_are_opaque() {
     for name in [
         "ordinary",

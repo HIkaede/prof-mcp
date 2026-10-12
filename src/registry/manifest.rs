@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::errors::{corrupt, path_text, registry_io};
-use super::layout::{MANIFEST, profile_file};
+use super::layout::MANIFEST;
 use super::persist::atomic_write_bytes;
 use super::valid_alias;
 use crate::error::ApiError;
@@ -28,10 +28,8 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct ManifestProfile {
     pub fingerprint: String,
-    pub file: String,
     pub source_name: String,
     pub byte_len: u64,
-    pub registered_unix_ms: u64,
 }
 
 pub(crate) fn read_manifest_optional(state: &Path) -> Result<Option<Manifest>, ApiError> {
@@ -71,19 +69,26 @@ pub(crate) fn read_manifest_required(state: &Path) -> Result<Manifest, ApiError>
         .map_err(|error| registry_io(&path, error))?;
     check_manifest_size(bytes.len())?;
     serde_json::from_slice(&bytes).map_err(|error| {
-        corrupt(
-            "Registry manifest is not valid schema_version 1 JSON",
+        ApiError::new(
+            "registry_corrupt",
+            "Registry manifest is not valid schema_version 2 JSON; legacy schema_version 1 is unsupported",
             json!({"error":error.to_string()}),
+            "Back up and move aside the old registry, then create a fresh schema_version 2 registry and re-register profiles; no automatic migration.",
         )
     })
 }
 
 pub(crate) fn validate_manifest(manifest: &Manifest) -> Result<(), ApiError> {
-    if manifest.schema_version != 1 || !valid_alias(&manifest.active) {
-        return Err(corrupt(
-            "Registry schema version or active alias is invalid",
-            json!({}),
+    if manifest.schema_version != 2 {
+        return Err(ApiError::new(
+            "registry_corrupt",
+            "Registry manifest must use schema_version 2; older formats are unsupported",
+            json!({"schema_version":manifest.schema_version, "required_schema_version":2}),
+            "Back up and move aside the old registry, then create a fresh schema_version 2 registry and re-register profiles; no automatic migration.",
         ));
+    }
+    if !valid_alias(&manifest.active) {
+        return Err(corrupt("Registry active alias is invalid", json!({})));
     }
     if manifest.profiles.is_empty() || !manifest.profiles.contains_key(&manifest.active) {
         return Err(corrupt(
@@ -94,7 +99,6 @@ pub(crate) fn validate_manifest(manifest: &Manifest) -> Result<(), ApiError> {
     for (alias, entry) in &manifest.profiles {
         if !valid_alias(alias)
             || !valid_fingerprint(&entry.fingerprint)
-            || entry.file != profile_file(&entry.fingerprint)
             || !valid_source_name(&entry.source_name)
         {
             return Err(corrupt(
@@ -109,27 +113,6 @@ pub(crate) fn validate_manifest(manifest: &Manifest) -> Result<(), ApiError> {
 pub(crate) fn valid_source_name(name: &str) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
-}
-
-pub(crate) fn safe_profile_path(
-    state: &Path,
-    entry: &ManifestProfile,
-) -> Result<PathBuf, ApiError> {
-    let relative = Path::new(&entry.file);
-    if relative.is_absolute()
-        || relative.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(corrupt(
-            "Registry profile path escapes .prof-mcp",
-            json!({"file":entry.file}),
-        ));
-    }
-    Ok(state.join(relative))
 }
 
 pub(crate) fn valid_fingerprint(fingerprint: &str) -> bool {

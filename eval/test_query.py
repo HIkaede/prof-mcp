@@ -31,6 +31,16 @@ class TransportTests(unittest.TestCase):
             self.assertIsInstance(paths["data"]["frame"], int)
             self.assertTrue((workspace / "queries.jsonl").is_file())
 
+    def test_error_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            error = query(BINARY, workspace, "profile_summary", {})
+            self.assertEqual(error["code"], "workspace_not_registered")
+            self.assertTrue(error["retry_hint"])
+            invalid = query(BINARY, workspace, "profile_top", {"metric": "unknown"})
+            self.assertTrue(invalid["isError"])
+            self.assertIn("failed to deserialize parameters", invalid["content"][0]["text"])
+
     def test_timeout_reaps_child(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

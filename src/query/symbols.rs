@@ -56,11 +56,7 @@ pub(crate) fn find_symbols(
         warnings,
         FindData {
             query: query.into(),
-            mode: match mode {
-                MatchMode::Contains => "contains",
-                MatchMode::Regex => "regex",
-            }
-            .into(),
+            mode,
             matches: rows,
         },
     ))

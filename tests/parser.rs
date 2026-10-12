@@ -25,6 +25,23 @@ fn parse_folded_whitespace() {
 }
 
 #[test]
+fn randomized_builder_hashing_preserves_frame_ids_and_stack_order() {
+    let input = b"root;zeta;leaf 2\nroot;alpha 3\nroot;zeta;leaf 5\nroot;alpha;zeta 7\n";
+    let expected = parse(input).unwrap();
+    for _ in 0..16 {
+        let actual = parse(input).unwrap();
+        assert_eq!(actual.frames.name_text, expected.frames.name_text);
+        assert_eq!(actual.frames.name_offsets, expected.frames.name_offsets);
+        assert_eq!(actual.stacks.offsets, expected.stacks.offsets);
+        assert_eq!(actual.stacks.frames, expected.stacks.frames);
+        assert_eq!(actual.stacks.weights, expected.stacks.weights);
+        assert_eq!(actual.cct.child_offsets, expected.cct.child_offsets);
+        assert_eq!(actual.cct.children, expected.cct.children);
+    }
+    assert_eq!(&*expected.stacks.weights, &[7, 3, 7]);
+}
+
+#[test]
 fn trim_weight_delimiter() {
     let profile = parse(b"root;A  \t37\n").unwrap();
     assert_eq!(profile.frame_id("A"), Some(1));

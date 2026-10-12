@@ -1,11 +1,9 @@
 //! Advisory registration lock with replaced-file identity detection.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, OpenOptions, TryLockError};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use fs2::FileExt;
 use serde_json::json;
 
 use super::errors::{corrupt, path_text, registry_io};
@@ -49,17 +47,14 @@ impl RegistrationLock {
                 json!({"path":path_text(&path)}),
             ));
         }
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                ApiError::new(
-                    "registry_busy",
-                    "Another registry operation is already updating this workspace",
-                    json!({}),
-                    "Retry after the other prof-mcp registry operation exits.",
-                )
-            } else {
-                registry_io(&path, error)
-            }
+        file.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => ApiError::new(
+                "registry_busy",
+                "Another registry operation is already updating this workspace",
+                json!({}),
+                "Retry after the other prof-mcp registry operation exits.",
+            ),
+            TryLockError::Error(error) => registry_io(&path, error),
         })?;
         if !lock_file_matches_path(&file, &path)? {
             return Err(corrupt(
@@ -72,7 +67,7 @@ impl RegistrationLock {
 }
 impl Drop for RegistrationLock {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
+        let _ = self.0.unlock();
     }
 }
 
@@ -94,14 +89,6 @@ pub(crate) fn lock_file_matches_path(_file: &fs::File, path: &Path) -> Result<bo
         json!({"path":path_text(path)}),
         "Run prof-mcp on a platform with stable lock-file identity checks.",
     ))
-}
-
-pub(crate) fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
 }
 
 #[cfg(all(test, unix))]

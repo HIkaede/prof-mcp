@@ -27,7 +27,7 @@ producer | prof-mcp register - --name streamed     # stdin
 prof-mcp capture --name candidate -- ./my-program args...   # Linux, needs perf
 ```
 
-`prof-mcp PROFILE` is shorthand for `register`. Running with no arguments prints
+Use the explicit `register` subcommand. Running with no arguments prints
 help. The server finds the nearest ancestor `.prof-mcp/manifest.json` on every
 query, so no restart is needed after registering. Until a profile exists,
 queries return `workspace_not_registered`.
@@ -92,9 +92,11 @@ selected or their weights:
 Input schemas reject unknown fields. Responses use schema version `"2"`, and any
 `truncated=true` carries structured `truncation_reasons`.
 
-Clients must pass `structuredContent` to the agent. It holds the full evidence
-and error-recovery hints. The text `content` is only a summary of at most
-2048 bytes. How a given host (including Codex) maps the two is unverified.
+Clients must pass successful `structuredContent` to the agent. It holds the full
+evidence; success text `content` is a summary of at most 2048 bytes. Business
+errors set `isError=true`, carry complete `ApiError` JSON in text `content`, and
+omit `structuredContent`. Codex CLI 0.162.1 exposes full successful results,
+continuations, and business errors; the Desktop host remains unverified.
 
 ## Limits
 
@@ -127,7 +129,7 @@ Linux. CI validates Linux only, and other platforms are not verified.
 ## Development
 
 Development follows the stable toolchain from `rust-toolchain.toml`. The minimum
-supported Rust version is 1.88, and CI tests both.
+supported Rust version is 1.89, and CI tests both.
 
 ```bash
 cargo build --locked --release

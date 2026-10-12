@@ -6,7 +6,7 @@ Do not create or modify documentation unless the user explicitly requests it.
 
 ## Scope
 
-`prof-mcp` is a Rust 2024, MSRV 1.88, workspace-local MCP server for folded
+`prof-mcp` is a Rust 2024, MSRV 1.89, workspace-local MCP server for folded
 stack profiles, with a thin Linux CLI capture pipeline. Keep the implementation
 small and preserve the existing read-only query boundary.
 
@@ -50,14 +50,15 @@ small and preserve the existing read-only query boundary.
 - `gc` may remove only unreferenced, regular, fingerprint-named profile blobs;
   it must not rewrite the manifest or active alias. Keep `--dry-run`
   deterministic.
-- Query failures must remain structured API errors. Do not turn malformed or
+- Business query failures set `isError=true`, carry complete `ApiError` JSON in
+  text `content`, and omit `structuredContent`. Do not turn malformed or
   untrusted profile/registry input into a panic or an arbitrary filesystem
   operation.
 
 ## Integration side effects
 
-- Direct invocation with no arguments prints help without persistent side effects;
-  an explicit profile argument remains the registration shorthand.
+- Direct invocation with no arguments prints help without persistent side effects.
+  Registration requires the explicit `register` subcommand.
 - `capture` is Linux-only and must pass the target command directly to system
   `perf`; it must not invoke a shell. It parses `perf script` output in Rust,
   then reuses `registry::register`, preserving size, parser, alias, and
@@ -96,7 +97,7 @@ cargo test --locked --all-targets --all-features
 cargo test --locked --release --test stdio
 python3 eval/test_query.py
 python3 eval/score.py --self-check
-cargo +1.88.0 test --locked --all-targets --all-features
+cargo +1.89.0 test --locked --all-targets --all-features
 ```
 
 CI also runs a short fuzz smoke (see the `fuzz` job); run it when changing

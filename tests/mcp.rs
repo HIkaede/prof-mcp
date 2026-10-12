@@ -98,7 +98,10 @@ async fn discover_live_registration() {
             .unwrap();
         assert_eq!(unavailable.is_error, Some(true));
         assert_eq!(
-            unavailable.structured_content.unwrap()["code"],
+            serde_json::from_str::<serde_json::Value>(
+                &unavailable.content[0].as_text().unwrap().text
+            )
+            .unwrap()["code"],
             "workspace_not_registered"
         );
 

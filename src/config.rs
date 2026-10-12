@@ -9,12 +9,6 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
-    /// Shorthand for `prof-mcp register PROFILE`.
-    #[arg(value_name = "PROFILE")]
-    pub profile: Option<std::path::PathBuf>,
-    /// Alias for the PROFILE shorthand.
-    #[arg(long, value_name = "ALIAS", requires = "profile")]
-    pub name: Option<String>,
     /// Maximum accepted profile file size in MiB.
     #[arg(long, default_value_t = 512, global = true)]
     pub max_file_size_mib: u64,

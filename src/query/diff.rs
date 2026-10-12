@@ -38,8 +38,10 @@ pub(crate) fn diff(
     while baseline_ids.peek().is_some() || candidate_ids.peek().is_some() {
         let baseline_id = baseline_ids.peek().copied();
         let candidate_id = candidate_ids.peek().copied();
-        let ordering = match (baseline_id, candidate_id) {
-            (Some(a), Some(b)) => baseline.frame_name(a).cmp(candidate.frame_name(b)),
+        let baseline_name = baseline_id.map(|id| baseline.frame_name(id));
+        let candidate_name = candidate_id.map(|id| candidate.frame_name(id));
+        let ordering = match (baseline_name, candidate_name) {
+            (Some(a), Some(b)) => a.cmp(b),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => unreachable!("at least one dictionary has a frame"),
@@ -49,12 +51,12 @@ pub(crate) fn diff(
         let mut name = "";
         if ordering != std::cmp::Ordering::Greater {
             let id = baseline_ids.next().unwrap();
-            name = baseline.frame_name(id);
+            name = baseline_name.unwrap();
             baseline_weight = metric_weight(&baseline.frame_stats[id as usize], metric);
         }
         if ordering != std::cmp::Ordering::Less {
             let id = candidate_ids.next().unwrap();
-            name = candidate.frame_name(id);
+            name = candidate_name.unwrap();
             candidate_weight = metric_weight(&candidate.frame_stats[id as usize], metric);
         }
         if regex.as_ref().is_some_and(|re| !re.is_match(name)) {
@@ -102,20 +104,7 @@ pub(crate) fn diff(
         candidate.total_weight,
         truncation_reasons,
         vec!["Percentage-point changes do not prove causality or statistical significance.".into()],
-        DiffData {
-            metric: match metric {
-                TopSort::SelfWeight => "self",
-                TopSort::Inclusive => "inclusive",
-            }
-            .into(),
-            sort: match sort {
-                DiffSort::Regression => "regression",
-                DiffSort::Improvement => "improvement",
-                DiffSort::Absolute => "absolute",
-            }
-            .into(),
-            rows,
-        },
+        DiffData { metric, sort, rows },
     );
     Ok(DiffOutput {
         schema_version: SCHEMA_VERSION.into(),

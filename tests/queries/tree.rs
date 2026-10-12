@@ -64,3 +64,18 @@ fn tree_construction_bounds_long_names_in_nodes_and_continuations() {
         assert_eq!(error.details["resource"], "response_bytes");
     }
 }
+
+#[test]
+fn mixed_tree_truncations_keep_fields_and_reason_order() {
+    let profile = support::profile("A;leafA 10\nB;leafB 3\nC 1\n");
+    let tree = query::tree(&profile, 0, None, 1, 2, 10.0).unwrap();
+    assert_eq!(
+        tree["truncation_reasons"],
+        serde_json::json!([
+            {"kind":"depth_limit","max_depth":1,"omitted_children":1,"omitted_weight":10},
+            {"kind":"min_scope_percent","threshold":10.0,"omitted_children":1,"omitted_weight":1},
+            {"kind":"node_budget","max_nodes":2,"omitted_children":1,"omitted_weight":3}
+        ])
+    );
+    assert_eq!(tree["data"]["continuations"][0]["reason"], "depth_limit");
+}

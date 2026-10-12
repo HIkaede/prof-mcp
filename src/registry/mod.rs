@@ -30,10 +30,10 @@ use layout::{
     MANIFEST, PROFILES_DIR, REGISTRY_DIR, ensure_profiles_dir, ensure_registry_layout,
     is_profile_blob_name, profile_file,
 };
-use lock::{RegistrationLock, unix_ms};
+use lock::RegistrationLock;
 use manifest::{
-    atomic_write_json, read_manifest_optional, read_manifest_required, safe_profile_path,
-    valid_source_name, validate_manifest,
+    atomic_write_json, read_manifest_optional, read_manifest_required, valid_source_name,
+    validate_manifest,
 };
 use persist::{atomic_copy, files_equal, sync_directory};
 
@@ -66,7 +66,6 @@ pub struct RegistryProfile {
     pub fingerprint: String,
     pub source_name: String,
     pub byte_len: u64,
-    pub registered_unix_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -193,21 +192,18 @@ pub fn register_reader(
             manifest
         }
         None => Manifest {
-            schema_version: 1,
+            schema_version: 2,
             active: alias.clone(),
             profiles: BTreeMap::new(),
         },
     };
-    manifest.schema_version = 1;
     manifest.active = alias.clone();
     manifest.profiles.insert(
         alias.clone(),
         ManifestProfile {
             fingerprint: fingerprint.clone(),
-            file: file.clone(),
             source_name,
             byte_len,
-            registered_unix_ms: unix_ms(),
         },
     );
     validate_manifest(&manifest)?;
@@ -311,20 +307,17 @@ pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProf
         )
     })?;
     ensure_profiles_dir(&state, false)?;
-    let path = safe_profile_path(&state, entry)?;
-    let metadata = fs::symlink_metadata(&path).map_err(|_| {
-        corrupt(
-            "Registered profile file is missing",
-            json!({"file":entry.file}),
-        )
-    })?;
+    let file = profile_file(&entry.fingerprint);
+    let path = state.join(&file);
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| corrupt("Registered profile file is missing", json!({"file":file})))?;
     if metadata.file_type().is_symlink()
         || !metadata.file_type().is_file()
         || metadata.len() != entry.byte_len
     {
         return Err(corrupt(
             "Registered profile file does not match its manifest entry",
-            json!({"file":entry.file,"expected_byte_len":entry.byte_len,"actual_byte_len":metadata.len()}),
+            json!({"file":file,"expected_byte_len":entry.byte_len,"actual_byte_len":metadata.len()}),
         ));
     }
     Ok(ResolvedProfile {
@@ -354,7 +347,6 @@ pub fn status(workspace: &Path) -> Result<RegistryStatus, ApiError> {
             fingerprint: profile.fingerprint.clone(),
             source_name: profile.source_name.clone(),
             byte_len: profile.byte_len,
-            registered_unix_ms: profile.registered_unix_ms,
         })
         .collect();
     Ok(RegistryStatus {
@@ -499,7 +491,7 @@ pub fn gc(workspace: &Path, dry_run: bool) -> Result<GcReport, ApiError> {
     let referenced: BTreeSet<_> = manifest
         .profiles
         .values()
-        .map(|entry| entry.file.clone())
+        .map(|entry| profile_file(&entry.fingerprint))
         .collect();
     let profiles = state.join(PROFILES_DIR);
     let mut entries: Vec<_> = fs::read_dir(&profiles)

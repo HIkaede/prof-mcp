@@ -31,9 +31,18 @@ fn register_and_deduplicate() {
     assert_eq!(manifest.active, "candidate");
     assert_eq!(manifest.profiles.len(), 2);
     assert_eq!(manifest.profiles["candidate"].source_name, "first.folded");
-    assert_eq!(
-        manifest.profiles["candidate"].file,
-        format!("profiles/{}.folded", first.fingerprint)
+    assert_eq!(manifest.schema_version, 2);
+    let stored = serde_json::to_value(&manifest).unwrap();
+    assert!(stored["profiles"]["candidate"].get("file").is_none());
+    assert!(
+        stored["profiles"]["candidate"]
+            .get("registered_unix_ms")
+            .is_none()
+    );
+    assert!(
+        serde_json::to_value(registry::status(workspace.path()).unwrap()).unwrap()["profiles"][0]
+            .get("registered_unix_ms")
+            .is_none()
     );
 
     fs::write(&source, b"root;new 1\n").unwrap();
@@ -98,25 +107,96 @@ fn reject_invalid_manifest_fields() {
     fs::write(&source, "root;A 1\n").unwrap();
     registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
-    let mut value: serde_json::Value =
+    let original: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    value["unexpected"] = serde_json::json!(true);
-    fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert_eq!(
-        registry::resolve(workspace.path(), None).unwrap_err().code,
-        "registry_corrupt"
-    );
+    for field in ["unexpected", "registered_unix_ms"] {
+        let mut value = original.clone();
+        if field == "unexpected" {
+            value[field] = serde_json::json!(true);
+        } else {
+            value["profiles"]["base"][field] = serde_json::json!(123);
+        }
+        fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            registry::resolve(workspace.path(), None).unwrap_err().code,
+            "registry_corrupt"
+        );
+    }
 }
 
 #[test]
-fn reject_escaping_profile_paths() {
+fn reject_legacy_registry_without_rewriting_it() {
+    let workspace = tempdir().unwrap();
+    registry::register_reader(
+        workspace.path(),
+        &b"root;A 1\n"[..],
+        "input.folded",
+        Some("base"),
+        1024,
+    )
+    .unwrap();
+    let path = workspace.path().join(".prof-mcp/manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["schema_version"] = serde_json::json!(1);
+    for legacy_fields in [false, true] {
+        if legacy_fields {
+            let fingerprint = manifest["profiles"]["base"]["fingerprint"]
+                .as_str()
+                .unwrap();
+            manifest["profiles"]["base"]["file"] =
+                serde_json::json!(format!("profiles/{fingerprint}.folded"));
+            manifest["profiles"]["base"]["registered_unix_ms"] = serde_json::json!(123);
+        }
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        for error in [
+            registry::resolve(workspace.path(), None).unwrap_err(),
+            registry::status(workspace.path()).unwrap_err(),
+            registry::set_active(workspace.path(), "base").unwrap_err(),
+            registry::remove(workspace.path(), "base", None).unwrap_err(),
+            registry::gc(workspace.path(), true).unwrap_err(),
+            registry::gc(workspace.path(), false).unwrap_err(),
+            registry::register_reader(
+                workspace.path(),
+                &b"root;B 1\n"[..],
+                "new.folded",
+                Some("next"),
+                1024,
+            )
+            .unwrap_err(),
+        ] {
+            assert_eq!(error.code, "registry_corrupt");
+            assert!(
+                error.message.contains("schema_version 2"),
+                "{}",
+                error.message
+            );
+            assert!(error.message.contains("unsupported"), "{}", error.message);
+        }
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            fs::read_dir(workspace.path().join(".prof-mcp/profiles"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn reject_persisted_profile_paths() {
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
     registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
     let valid_manifest = fs::read(&manifest).unwrap();
-    for escaped in ["../outside.folded", "/tmp/outside.folded"] {
+    for escaped in [
+        "../outside.folded",
+        "/tmp/outside.folded",
+        "profiles/valid.folded",
+    ] {
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
         value["profiles"]["base"]["file"] = serde_json::json!(escaped);
@@ -145,8 +225,6 @@ fn recover_lock_contention() {
     use std::fs::OpenOptions;
     use std::process::Command;
 
-    use fs2::FileExt;
-
     let workspace = tempdir().unwrap();
     let source = workspace.path().join("input.folded");
     fs::write(&source, "root;A 1\n").unwrap();
@@ -158,7 +236,7 @@ fn recover_lock_contention() {
         .write(true)
         .open(&lock)
         .unwrap();
-    lock_file.lock_exclusive().unwrap();
+    lock_file.lock().unwrap();
     assert_eq!(
         registry::register(workspace.path(), &source, Some("api"), 1024)
             .unwrap_err()
@@ -167,6 +245,7 @@ fn recover_lock_contention() {
     );
     let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
         .current_dir(workspace.path())
+        .arg("register")
         .arg(&source)
         .arg("--name")
         .arg("cli")
@@ -191,7 +270,7 @@ fn reject_invalid_manifests() {
     let mut variants: Vec<serde_json::Value> = Vec::new();
     let valid: serde_json::Value = serde_json::from_slice(&valid_manifest).unwrap();
     let mutations: [fn(&mut serde_json::Value); 4] = [
-        |value: &mut serde_json::Value| value["schema_version"] = serde_json::json!(2),
+        |value: &mut serde_json::Value| value["schema_version"] = serde_json::json!(1),
         |value: &mut serde_json::Value| value["active"] = serde_json::json!("missing"),
         |value: &mut serde_json::Value| {
             value["profiles"]["base"]["fingerprint"] = serde_json::json!("not-a-fingerprint")
@@ -408,6 +487,7 @@ fn register_non_utf8_basename() {
     fs::write(&cli_source, bytes).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
         .current_dir(cli_workspace.path())
+        .arg("register")
         .arg(&cli_source)
         .output()
         .unwrap();
@@ -506,22 +586,14 @@ fn reader_matches_file() {
         assert_eq!(resolved.alias, "base");
         assert_eq!(fs::read(resolved.path).unwrap(), bytes);
     }
-    let mut left: serde_json::Value = serde_json::from_slice(
+    let left: serde_json::Value = serde_json::from_slice(
         &fs::read(file_root.path().join(".prof-mcp/manifest.json")).unwrap(),
     )
     .unwrap();
-    let mut right: serde_json::Value = serde_json::from_slice(
+    let right: serde_json::Value = serde_json::from_slice(
         &fs::read(stream_root.path().join(".prof-mcp/manifest.json")).unwrap(),
     )
     .unwrap();
-    left["profiles"]["base"]
-        .as_object_mut()
-        .unwrap()
-        .remove("registered_unix_ms");
-    right["profiles"]["base"]
-        .as_object_mut()
-        .unwrap()
-        .remove("registered_unix_ms");
     assert_eq!(left, right);
 }
 

@@ -62,9 +62,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.89.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo +1.88.0 test --locked --all-targets --all-features
+      - run: cargo +1.89.0 test --locked --all-targets --all-features
 
   fuzz:
     runs-on: ubuntu-latest

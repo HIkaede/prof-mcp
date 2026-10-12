@@ -2,6 +2,105 @@ use std::{fs, sync::Arc};
 
 use prof_mcp::{cache::ProfileCache, registry};
 
+fn register(workspace: &std::path::Path, alias: &str, frame: &str) {
+    let source = workspace.join("input.folded");
+    fs::write(&source, format!("root;{frame} 1\n")).unwrap();
+    registry::register(workspace, &source, Some(alias), 1024 * 1024).unwrap();
+}
+
+#[test]
+fn zero_capacity_is_rejected() {
+    let workspace = tempfile::tempdir().unwrap();
+    let error = ProfileCache::new(workspace.path().to_owned(), 1024, 0)
+        .err()
+        .expect("zero capacity must be rejected");
+    assert_eq!(error.code, "invalid_budget");
+}
+
+#[tokio::test]
+async fn cache_hit_promotes_profile_before_capacity_eviction() {
+    let workspace = tempfile::tempdir().unwrap();
+    for alias in ["one", "two", "three"] {
+        register(workspace.path(), alias, alias);
+    }
+    let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
+    let one = cache.load(Some("one")).await.unwrap();
+    let two = cache.load(Some("two")).await.unwrap();
+    assert!(Arc::ptr_eq(
+        &one.profile,
+        &cache.load(Some("one")).await.unwrap().profile
+    ));
+    let three = cache.load(Some("three")).await.unwrap();
+    assert!(Arc::ptr_eq(
+        &one.profile,
+        &cache.load(Some("one")).await.unwrap().profile
+    ));
+    assert!(Arc::ptr_eq(
+        &three.profile,
+        &cache.load(Some("three")).await.unwrap().profile
+    ));
+    assert!(!Arc::ptr_eq(
+        &two.profile,
+        &cache.load(Some("two")).await.unwrap().profile
+    ));
+}
+
+#[tokio::test]
+async fn byte_budget_evicts_multiple_profiles_and_skips_oversized_admission() {
+    let workspace = tempfile::tempdir().unwrap();
+    for alias in ["one", "two", "six"] {
+        register(workspace.path(), alias, alias);
+    }
+    let probe = ProfileCache::new(workspace.path().to_owned(), 1024 * 1024, 8).unwrap();
+    let small_bytes = probe
+        .load(Some("one"))
+        .await
+        .unwrap()
+        .profile
+        .estimated_size_bytes();
+    let budget = 3 * small_bytes;
+    register(workspace.path(), "large", &"x".repeat(2 * small_bytes));
+    register(workspace.path(), "oversized", &"x".repeat(4 * small_bytes));
+    let large_bytes = probe
+        .load(Some("large"))
+        .await
+        .unwrap()
+        .profile
+        .estimated_size_bytes();
+    assert!(large_bytes > 2 * small_bytes && large_bytes <= budget);
+    assert!(
+        probe
+            .load(Some("oversized"))
+            .await
+            .unwrap()
+            .profile
+            .estimated_size_bytes()
+            > budget
+    );
+    let cache = ProfileCache::new(workspace.path().to_owned(), 1024 * 1024, 8)
+        .unwrap()
+        .with_byte_budget(budget);
+    let one = cache.load(Some("one")).await.unwrap();
+    let two = cache.load(Some("two")).await.unwrap();
+    let six = cache.load(Some("six")).await.unwrap();
+    let large = cache.load(Some("large")).await.unwrap();
+    let oversized = cache.load(Some("oversized")).await.unwrap();
+    assert!(!Arc::ptr_eq(
+        &oversized.profile,
+        &cache.load(Some("oversized")).await.unwrap().profile
+    ));
+    assert!(Arc::ptr_eq(
+        &large.profile,
+        &cache.load(Some("large")).await.unwrap().profile
+    ));
+    for (alias, original) in [("six", six), ("two", two), ("one", one)] {
+        assert!(!Arc::ptr_eq(
+            &original.profile,
+            &cache.load(Some(alias)).await.unwrap().profile
+        ));
+    }
+}
+
 #[tokio::test]
 async fn refresh_replaced_alias() {
     let workspace = tempfile::tempdir().unwrap();

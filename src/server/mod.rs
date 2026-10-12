@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use rmcp::{
     RoleServer, ServerHandler, ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext},
     model::{
         CacheScope, CallToolRequestParams, CallToolResponse, ListToolsResult,
         PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
@@ -24,7 +24,6 @@ mod respond;
 mod tests;
 mod tools;
 
-use inputs::parse_input;
 use serde_json::json;
 
 use crate::cache::{LoadedProfile, ProfileCache};
@@ -117,46 +116,15 @@ impl ServerHandler for ProfileServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
-        let arguments = request.arguments.unwrap_or_default();
-        let result = match request.name.as_ref() {
-            "profile_summary" => {
-                self.profile_summary(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            "profile_find_symbols" => {
-                self.profile_find_symbols(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            "profile_top" => self.profile_top(Parameters(parse_input(&arguments)?)).await,
-            "profile_tree" => {
-                self.profile_tree(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            "profile_callers" => {
-                self.profile_callers(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            "profile_callees" => {
-                self.profile_callees(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            "profile_paths" => {
-                self.profile_paths(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            "profile_diff" => {
-                self.profile_diff(Parameters(parse_input(&arguments)?))
-                    .await
-            }
-            _ => {
-                return Err(rmcp::ErrorData::method_not_found::<
-                    rmcp::model::CallToolRequestMethod,
-                >());
-            }
-        };
-        Ok(result.into())
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+            .map(|response| match response {
+                CallToolResponse::Complete(result) => respond::bounded_result(result).into(),
+                response => response,
+            })
     }
     async fn list_tools(
         &self,

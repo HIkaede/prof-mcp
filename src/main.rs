@@ -79,14 +79,11 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        None => match cli.profile {
-            Some(profile) => register(&config, &profile, cli.name.as_deref()),
-            None => {
-                Cli::command().print_help()?;
-                println!();
-                Ok(())
-            }
-        },
+        None => {
+            Cli::command().print_help()?;
+            println!();
+            Ok(())
+        }
     }
 }
 

@@ -36,6 +36,11 @@ def query(binary, workspace, tool, arguments):
             return result
         result = request(2, "tools/call", {"name": tool, "arguments": arguments})
         value = result.get("structuredContent", result)
+        if result.get("isError"):
+            try:
+                value = json.loads(result["content"][0]["text"])
+            except json.JSONDecodeError:
+                value = result
         payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         with (workspace / "queries.jsonl").open("a") as log:
             log.write(json.dumps({"tool": tool, "arguments": arguments, "response_bytes": len(payload.encode()), "token_estimate": (len(payload.encode()) + 3) // 4}) + "\n")

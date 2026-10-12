@@ -5,12 +5,15 @@
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
-use regex::Regex;
-use serde_json::{Value, json};
+use regex::{Regex, RegexBuilder};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::error::ApiError;
 pub(crate) use crate::output::{
-    frame_row, frame_row_with_percent_weight, percent, typed_envelope as envelope,
+    TreeTruncation, TruncationReason, frame_row, frame_row_with_percent_weight, percent,
+    typed_envelope as envelope,
 };
 pub(crate) use crate::profile::{FrameId, FrameStats, NodeId, Profile};
 
@@ -41,18 +44,22 @@ pub struct FrameSelector {
     pub frame_name: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub enum TopSort {
+    #[serde(rename = "self")]
     SelfWeight,
+    #[serde(rename = "inclusive")]
     Inclusive,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum DiffSort {
     Regression,
     Improvement,
     Absolute,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum MatchMode {
     Contains,
     Regex,
@@ -110,14 +117,18 @@ pub(crate) fn compile_regex(pattern: &str) -> Result<Regex, ApiError> {
             "Use a shorter regex.",
         ));
     }
-    Regex::new(pattern).map_err(|error| {
-        ApiError::new(
-            "invalid_regex",
-            format!("Invalid regex: {error}"),
-            json!({"pattern":pattern}),
-            "Fix the regex syntax and retry.",
-        )
-    })
+    RegexBuilder::new(pattern)
+        .size_limit(10 * 1024 * 1024)
+        .dfa_size_limit(2 * 1024 * 1024)
+        .build()
+        .map_err(|error| {
+            ApiError::new(
+                "invalid_regex",
+                format!("Invalid regex: {error}"),
+                json!({"pattern":pattern}),
+                "Simplify the regex or fix its syntax and retry.",
+            )
+        })
 }
 pub(crate) fn check_limit(
     value: usize,
@@ -151,35 +162,43 @@ pub(crate) fn check_budget(depth: usize, nodes: usize, percent: f64) -> Result<(
     }
 }
 
-pub(crate) fn row_limit_reason(limit: usize, available: usize) -> Vec<Value> {
+pub(crate) fn row_limit_reason(limit: usize, available: usize) -> Vec<TruncationReason> {
     if available > limit {
-        vec![json!({
-            "kind":"row_limit",
-            "limit":limit,
-            "returned":limit,
-            "available":available,
-            "omitted":available-limit
-        })]
+        vec![TruncationReason::RowLimit {
+            limit,
+            returned: limit,
+            available,
+            omitted: available - limit,
+        }]
     } else {
         Vec::new()
     }
 }
 
 pub(crate) fn tree_reason_values(
-    stats: &BTreeMap<&'static str, TruncationStats>,
+    stats: &BTreeMap<TreeTruncation, TruncationStats>,
     max_depth: usize,
     max_nodes: usize,
     min_scope_percent: f64,
-) -> Vec<Value> {
+) -> Vec<TruncationReason> {
     stats
         .iter()
-        .map(|(kind, stats)| match *kind {
-            "depth_limit" => json!({"kind":"depth_limit","max_depth":max_depth,"omitted_children":stats.count,"omitted_weight":stats.weight}),
-            "node_budget" => json!({"kind":"node_budget","max_nodes":max_nodes,"omitted_children":stats.count,"omitted_weight":stats.weight}),
-            "min_scope_percent" => {
-                json!({"kind":"min_scope_percent","threshold":min_scope_percent,"omitted_children":stats.count,"omitted_weight":stats.weight})
-            }
-            _ => json!({"kind":kind,"omitted_children":stats.count,"omitted_weight":stats.weight}),
+        .map(|(kind, stats)| match kind {
+            TreeTruncation::DepthLimit => TruncationReason::DepthLimit {
+                max_depth,
+                omitted_children: stats.count,
+                omitted_weight: stats.weight,
+            },
+            TreeTruncation::MinScopePercent => TruncationReason::MinScopePercent {
+                threshold: min_scope_percent,
+                omitted_children: stats.count,
+                omitted_weight: stats.weight,
+            },
+            TreeTruncation::NodeBudget => TruncationReason::NodeBudget {
+                max_nodes,
+                omitted_children: stats.count,
+                omitted_weight: stats.weight,
+            },
         })
         .collect()
 }
@@ -214,7 +233,7 @@ pub(crate) struct RenderState<'a, C> {
     pub(crate) max_depth: usize,
     pub(crate) min_percent: f64,
     pub(crate) budget: &'a mut usize,
-    pub(crate) reason_stats: &'a mut BTreeMap<&'static str, TruncationStats>,
+    pub(crate) reason_stats: &'a mut BTreeMap<TreeTruncation, TruncationStats>,
     pub(crate) continuations: &'a mut Vec<C>,
     pub(crate) continuation_count: &'a mut usize,
     pub(crate) continuation_limit: usize,
@@ -231,7 +250,7 @@ pub(crate) struct TruncationStats {
 }
 
 impl<C> RenderState<'_, C> {
-    pub(crate) fn note_truncation(&mut self, reason: &'static str, weight: u64) {
+    pub(crate) fn note_truncation(&mut self, reason: TreeTruncation, weight: u64) {
         let stats = self.reason_stats.entry(reason).or_default();
         stats.count = stats.count.saturating_add(1);
         stats.weight = stats.weight.saturating_add(weight);

@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+use crate::query::{DiffSort, MatchMode, TopSort};
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) struct WeightSemantics {
@@ -18,11 +17,61 @@ pub(crate) struct OutputProfile {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub(crate) struct TruncationReason {
-    pub(crate) kind: String,
-    #[serde(flatten)]
-    #[schemars(flatten)]
-    pub(crate) details: BTreeMap<String, Value>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum TruncationReason {
+    RowLimit {
+        limit: usize,
+        returned: usize,
+        available: usize,
+        omitted: usize,
+    },
+    DepthLimit {
+        max_depth: usize,
+        omitted_children: usize,
+        omitted_weight: u64,
+    },
+    NodeBudget {
+        max_nodes: usize,
+        omitted_children: usize,
+        omitted_weight: u64,
+    },
+    MinScopePercent {
+        threshold: f64,
+        omitted_children: usize,
+        omitted_weight: u64,
+    },
+    FrameWindow {
+        mode: FrameWindowMode,
+        cropped_paths: usize,
+        total_omitted_before: usize,
+        total_omitted_after: usize,
+    },
+    TotalFrameBudget(TotalFrameBudget),
+    RegistryProfileLimit {
+        limit: usize,
+        returned: usize,
+        available: usize,
+        omitted: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FrameWindowMode {
+    Head,
+    Tail,
+    AroundTarget,
+}
+
+// Keep the previous alphabetical kind order in grouped truncation reasons.
+#[derive(
+    Clone, Copy, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TreeTruncation {
+    DepthLimit,
+    MinScopePercent,
+    NodeBudget,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -74,14 +123,14 @@ pub(crate) struct RegistryOutput {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) struct FindData {
     pub(crate) query: String,
-    pub(crate) mode: String,
+    pub(crate) mode: MatchMode,
     pub(crate) matches: Vec<crate::output::FrameRow>,
 }
 pub(crate) type FindOutput = OutputEnvelope<FindData>;
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) struct TopData {
-    pub(crate) metric: String,
+    pub(crate) metric: TopSort,
     pub(crate) frame: Option<u32>,
     pub(crate) rows: Vec<crate::output::FrameRow>,
 }
@@ -152,7 +201,7 @@ pub(crate) struct TreeContinuation {
     pub(crate) node_id: u32,
     pub(crate) frame_id: u32,
     pub(crate) name: String,
-    pub(crate) reason: String,
+    pub(crate) reason: TreeTruncation,
     pub(crate) continuation: Continuation,
     pub(crate) total_weight: u64,
     pub(crate) profile_percent: f64,
@@ -190,7 +239,7 @@ pub(crate) struct DirectionData {
 pub(crate) struct DirectionContinuation {
     pub(crate) frame_id: u32,
     pub(crate) name: String,
-    pub(crate) reason: String,
+    pub(crate) reason: TreeTruncation,
     pub(crate) continuation: Continuation,
     pub(crate) total_weight: u64,
     pub(crate) profile_percent: f64,
@@ -210,8 +259,8 @@ pub(crate) struct DiffRow {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub(crate) struct DiffData {
-    pub(crate) metric: String,
-    pub(crate) sort: String,
+    pub(crate) metric: TopSort,
+    pub(crate) sort: DiffSort,
     pub(crate) rows: Vec<DiffRow>,
 }
 

@@ -6,7 +6,7 @@ use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, to
 use super::ProfileServer;
 use super::inputs::{
     Continuation, ContinuationTool, DiffInput, DirectionInput, FindInput, PathsInput, ProfileInput,
-    TopInput, TreeInput, parse_diff_sort, parse_match, parse_metric,
+    TopInput, TreeInput,
 };
 use super::outputs::{
     DiffOutput, DirectionOutput, FindOutput, PathsOutput, SummaryOutput, TopOutput, TreeOutput,
@@ -44,13 +44,8 @@ impl ProfileServer {
         Parameters(input): Parameters<FindInput>,
     ) -> CallToolResult {
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
-            query::find_symbols(
-                &loaded.profile,
-                &input.query,
-                parse_match(&input.mode)?,
-                input.limit,
-            )
-            .map(|value| tag_alias(value, &loaded.alias))
+            query::find_symbols(&loaded.profile, &input.query, input.mode, input.limit)
+                .map(|value| tag_alias(value, &loaded.alias))
         })
         .await
     }
@@ -63,7 +58,7 @@ impl ProfileServer {
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
             query::top(
                 &loaded.profile,
-                parse_metric(&input.metric)?,
+                input.metric,
                 input.limit,
                 frame.as_ref(),
                 input.name_regex.as_deref(),
@@ -203,8 +198,8 @@ impl ProfileServer {
                 query::diff(
                     &baseline.profile,
                     &candidate.profile,
-                    parse_metric(&input.metric)?,
-                    parse_diff_sort(&input.sort)?,
+                    input.metric,
+                    input.sort,
                     input.limit,
                     input.name_regex.as_deref(),
                 )

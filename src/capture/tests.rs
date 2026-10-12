@@ -127,6 +127,77 @@ fn enforce_capture_limits() {
 }
 
 #[test]
+fn bound_unique_capture_stacks_and_allow_duplicates() {
+    let sample = "worker 12 1.0: 1 cycles:\n  7 leaf (/tmp/a)\n\n";
+    let limits = BuildLimits {
+        max_cct_nodes: 2,
+        ..BuildLimits::default()
+    };
+    let mut output = Vec::new();
+    collapse_perf_script(Cursor::new(sample.repeat(2)), &mut output, limits).unwrap();
+    assert_eq!(output, b"worker;leaf [/tmp/a] 2\n");
+
+    for max_cct_nodes in [0, 1, 2] {
+        let input = format!("{sample}{}", sample.replace("leaf", "other"));
+        let mut output = Vec::new();
+        let error = collapse_perf_script(
+            Cursor::new(input),
+            &mut output,
+            BuildLimits {
+                max_cct_nodes,
+                ..limits
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unique stack limit"));
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
+fn bound_capture_aggregation_bytes() {
+    let sample = "worker 12 1.0: 1 cycles:\n  7 leaf (/tmp/a)\n\n";
+    let entry_bytes = "worker;leaf [/tmp/a]".len() + 128;
+    for (input, max_model_bytes, succeeds) in [
+        (sample.repeat(2), entry_bytes, true),
+        (sample.to_owned(), entry_bytes - 1, false),
+        (
+            format!("{sample}{}", sample.replace("leaf", "other")),
+            entry_bytes * 2,
+            false,
+        ),
+        (
+            format!("{sample}{}", sample.replace("leaf", "other")),
+            entry_bytes * 2 + 1,
+            true,
+        ),
+        (sample.replace("leaf", &"x".repeat(100)), entry_bytes, false),
+    ] {
+        let mut output = Vec::new();
+        let result = collapse_perf_script(
+            Cursor::new(input),
+            &mut output,
+            BuildLimits {
+                max_model_bytes,
+                ..BuildLimits::default()
+            },
+        );
+        if succeeds {
+            result.unwrap();
+            assert!(!output.is_empty());
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("aggregation byte limit")
+            );
+            assert!(output.is_empty());
+        }
+    }
+}
+
+#[test]
 fn parse_header_variants() {
     let input = b"    worker 2 123 [001] 1.0: cycles:\n  7 leaf (/tmp/a)\n\nworker 2 123 [001] 2.0: 2 cycles:\n  7 leaf (/tmp/a)\n";
     let mut output = Vec::new();

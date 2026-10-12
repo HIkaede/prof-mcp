@@ -1,7 +1,7 @@
 //! Thin Linux capture orchestration: perf -> folded text -> registry.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     ffi::OsString,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Read, Write},
@@ -103,6 +103,7 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
     limits: BuildLimits,
 ) -> Result<()> {
     let mut collapsed = BTreeMap::<String, u64>::new();
+    let mut aggregation_bytes = 0_usize;
     let mut process = None;
     let mut period = 1_u64;
     let mut stack = Vec::<String>::new();
@@ -150,6 +151,7 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
                 period,
                 &mut stack,
                 &mut total_weight,
+                &mut aggregation_bytes,
                 limits,
             )?;
             continue;
@@ -161,6 +163,7 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
                 period,
                 &mut stack,
                 &mut total_weight,
+                &mut aggregation_bytes,
                 limits,
             )?;
             if event_filter
@@ -202,6 +205,7 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
         period,
         &mut stack,
         &mut total_weight,
+        &mut aggregation_bytes,
         limits,
     )?;
     if collapsed.is_empty() {
@@ -235,6 +239,7 @@ fn finish_sample(
     period: u64,
     stack: &mut Vec<String>,
     total_weight: &mut u64,
+    aggregation_bytes: &mut usize,
     limits: BuildLimits,
 ) -> Result<()> {
     let Some(process) = process.take() else {
@@ -255,7 +260,25 @@ fn finish_sample(
         key.push(';');
         key.push_str(&frame);
     }
-    let entry = collapsed.entry(key).or_insert(0);
+    let unique_stacks = collapsed.len();
+    let key_bytes = key.capacity();
+    let entry = match collapsed.entry(key) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => {
+            // Each distinct terminal stack needs a non-root node in the registered profile.
+            if unique_stacks >= limits.max_cct_nodes.saturating_sub(1) {
+                bail!("folded capture exceeds unique stack limit");
+            }
+            // Estimate retained strings and tree overhead; this is not an RSS limit.
+            let bytes = key_bytes
+                .checked_add(128)
+                .and_then(|bytes| aggregation_bytes.checked_add(bytes))
+                .filter(|bytes| *bytes <= limits.max_model_bytes)
+                .context("folded capture exceeds aggregation byte limit")?;
+            *aggregation_bytes = bytes;
+            entry.insert(0)
+        }
+    };
     *entry = entry
         .checked_add(period)
         .context("perf sample period overflow")?;

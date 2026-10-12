@@ -119,11 +119,7 @@ pub(crate) fn top(
         truncation_reasons,
         Vec::new(),
         TopData {
-            metric: match metric {
-                TopSort::SelfWeight => "self",
-                TopSort::Inclusive => "inclusive",
-            }
-            .into(),
+            metric,
             frame: frame_id,
             rows,
         },

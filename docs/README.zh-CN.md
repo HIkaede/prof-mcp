@@ -25,7 +25,7 @@ producer | prof-mcp register - --name streamed     # 从 stdin
 prof-mcp capture --name candidate -- ./my-program args...   # 仅 Linux，需要 perf
 ```
 
-`prof-mcp PROFILE` 是 `register` 的简写；无参数运行只打印帮助。服务器每次查询都会向上查找最近的 `.prof-mcp/manifest.json`，注册后无需重启。尚无 profile 时，查询返回 `workspace_not_registered`。
+请使用显式的 `register` 子命令；无参数运行只打印帮助。服务器每次查询都会向上查找最近的 `.prof-mcp/manifest.json`，注册后无需重启。尚无 profile 时，查询返回 `workspace_not_registered`。
 
 ## 管理 registry
 
@@ -68,7 +68,7 @@ inclusive 权重高不等于优化收益；diff 也不证明因果或统计显�
 
 `profile_paths` 的 `frame_window` 只裁剪显示，不改变路径选择和权重（示例见英文 README）。输入 schema 拒绝未知字段。响应的 schema 版本为 `"2"`，`truncated=true` 时一定带结构化的 `truncation_reasons`。
 
-客户端必须把 `structuredContent` 暴露给 agent：完整证据和错误恢复提示都在其中；文本 `content` 只是最多 2048 字节的摘要。实际宿主（包括 Codex）如何映射两者尚未验证。
+客户端必须把成功响应的 `structuredContent` 暴露给 agent，其中包含完整证据；成功的文本 `content` 是最多 2048 字节的摘要。业务错误返回 `isError=true`，文本 `content` 包含完整 `ApiError` JSON，没有 `structuredContent`。已验证 Codex CLI 0.162.1 能暴露完整成功结果、续查信息和业务错误；Desktop 宿主尚未验证。
 
 ## 限制
 
@@ -89,7 +89,7 @@ Registry 操作目前需要 Unix；`capture` 另外需要 Linux。CI 仅验证 L
 
 ## 开发
 
-开发使用 `rust-toolchain.toml` 指定的 stable 工具链，最低支持 Rust 1.88，CI 同时测试两者。
+开发使用 `rust-toolchain.toml` 指定的 stable 工具链，最低支持 Rust 1.89，CI 同时测试两者。
 
 ```bash
 cargo build --locked --release

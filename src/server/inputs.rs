@@ -1,10 +1,8 @@
 //! Tool input contracts, frame selectors, and argument parsing.
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde::Deserialize;
 
-use crate::error::ApiError;
 use crate::query::{
     DEFAULT_MAX_TOTAL_FRAMES, DiffSort, FrameSelector, FrameWindow, MatchMode, TopSort,
 };
@@ -45,29 +43,6 @@ fn frame_selector_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema 
         ]
     })
 }
-#[allow(dead_code)]
-#[derive(JsonSchema, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum FindModeSchema {
-    Contains,
-    Regex,
-}
-#[allow(dead_code)]
-#[derive(JsonSchema, Serialize)]
-pub(crate) enum MetricSchema {
-    #[serde(rename = "self")]
-    SelfWeight,
-    #[serde(rename = "inclusive")]
-    Inclusive,
-}
-#[allow(dead_code)]
-#[derive(JsonSchema, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum DiffSortSchema {
-    Regression,
-    Improvement,
-    Absolute,
-}
 impl From<FrameSelectorInput> for FrameSelector {
     fn from(value: FrameSelectorInput) -> Self {
         match value {
@@ -96,8 +71,7 @@ pub(crate) struct FindInput {
     pub profile: Option<String>,
     pub query: String,
     #[serde(default = "default_contains")]
-    #[schemars(with = "FindModeSchema")]
-    pub mode: String,
+    pub mode: MatchMode,
     #[serde(default = "default_find_limit")]
     #[schemars(range(min = 1, max = 100))]
     pub limit: usize,
@@ -108,8 +82,7 @@ pub(crate) struct TopInput {
     #[serde(default)]
     pub profile: Option<String>,
     #[serde(default = "default_self")]
-    #[schemars(with = "MetricSchema")]
-    pub metric: String,
+    pub metric: TopSort,
     #[serde(default = "default_top_limit")]
     #[schemars(range(min = 1, max = 200))]
     pub limit: usize,
@@ -213,24 +186,22 @@ pub(crate) struct DiffInput {
     pub baseline: String,
     pub candidate: String,
     #[serde(default = "default_self")]
-    #[schemars(with = "MetricSchema")]
-    pub metric: String,
+    pub metric: TopSort,
     #[serde(default = "default_regression")]
-    #[schemars(with = "DiffSortSchema")]
-    pub sort: String,
+    pub sort: DiffSort,
     #[serde(default = "default_diff_limit")]
     #[schemars(range(min = 1, max = 200))]
     pub limit: usize,
     pub name_regex: Option<String>,
 }
-fn default_contains() -> String {
-    "contains".into()
+fn default_contains() -> MatchMode {
+    MatchMode::Contains
 }
-fn default_self() -> String {
-    "self".into()
+fn default_self() -> TopSort {
+    TopSort::SelfWeight
 }
-fn default_regression() -> String {
-    "regression".into()
+fn default_regression() -> DiffSort {
+    DiffSort::Regression
 }
 fn default_find_limit() -> usize {
     20
@@ -255,49 +226,4 @@ fn default_max_total_frames() -> usize {
 }
 fn default_diff_limit() -> usize {
     30
-}
-
-pub(crate) fn parse_metric(value: &str) -> Result<TopSort, ApiError> {
-    match value {
-        "self" => Ok(TopSort::SelfWeight),
-        "inclusive" => Ok(TopSort::Inclusive),
-        _ => Err(ApiError::new(
-            "invalid_budget",
-            "metric must be self or inclusive",
-            json!({"value":value}),
-            "Use one documented enum value.",
-        )),
-    }
-}
-pub(crate) fn parse_input<T: DeserializeOwned>(
-    arguments: &serde_json::Map<String, Value>,
-) -> Result<T, rmcp::ErrorData> {
-    serde_json::from_value(Value::Object(arguments.clone())).map_err(|error| {
-        rmcp::ErrorData::invalid_params(format!("invalid tool arguments: {error}"), None)
-    })
-}
-pub(crate) fn parse_match(value: &str) -> Result<MatchMode, ApiError> {
-    match value {
-        "contains" => Ok(MatchMode::Contains),
-        "regex" => Ok(MatchMode::Regex),
-        _ => Err(ApiError::new(
-            "invalid_budget",
-            "mode must be contains or regex",
-            json!({"mode":value}),
-            "Use one documented enum value.",
-        )),
-    }
-}
-pub(crate) fn parse_diff_sort(value: &str) -> Result<DiffSort, ApiError> {
-    match value {
-        "regression" => Ok(DiffSort::Regression),
-        "improvement" => Ok(DiffSort::Improvement),
-        "absolute" => Ok(DiffSort::Absolute),
-        _ => Err(ApiError::new(
-            "invalid_budget",
-            "diff sort must be regression, improvement, or absolute",
-            json!({"sort":value}),
-            "Use one documented enum value.",
-        )),
-    }
 }

@@ -10,8 +10,8 @@ use hashbrown::HashMap;
 use serde_json::json;
 
 use super::{
-    ApiError, FrameId, FrameSelector, Profile, RenderState, check_budget, envelope, frame_row,
-    percent, resolve_selector, tree_reason_values,
+    ApiError, FrameId, FrameSelector, Profile, RenderState, TreeTruncation, check_budget, envelope,
+    frame_row, percent, resolve_selector, tree_reason_values,
 };
 
 pub(crate) fn callers(
@@ -306,11 +306,11 @@ fn render_temp(
         let child = &nodes[child_id as usize];
         let id = child.frame;
         let reason = if depth >= state.max_depth {
-            Some("depth_limit")
+            Some(TreeTruncation::DepthLimit)
         } else if percent(child.total_weight, state.scope) < state.min_percent {
-            Some("min_scope_percent")
+            Some(TreeTruncation::MinScopePercent)
         } else if *state.budget == 0 {
-            Some("node_budget")
+            Some(TreeTruncation::NodeBudget)
         } else {
             None
         };
@@ -331,7 +331,7 @@ fn render_temp(
                 state.continuations.push(DirectionContinuation {
                     frame_id: id,
                     name: profile.frame_name(id).to_owned(),
-                    reason: reason.into(),
+                    reason,
                     continuation: Continuation {
                         profile: String::new(),
                         fingerprint: profile.source.fingerprint.clone(),

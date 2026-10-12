@@ -5,6 +5,24 @@ use serde::Deserialize;
 use std::fs;
 use tempfile::tempdir;
 
+fn assert_argument_error(result: rmcp::model::CallToolResult) {
+    assert_eq!(result.is_error, Some(true));
+    assert!(result.structured_content.is_none());
+    assert!(
+        result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .starts_with("failed to deserialize parameters:")
+    );
+}
+
+fn error_payload(result: &rmcp::model::CallToolResult) -> serde_json::Value {
+    assert_eq!(result.is_error, Some(true));
+    assert!(result.structured_content.is_none());
+    serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap()
+}
+
 #[derive(Deserialize)]
 struct TypedEnvelope<T> {
     schema_version: String,
@@ -334,22 +352,69 @@ async fn truncated_path_positions() {
 #[tokio::test]
 async fn business_and_protocol_errors() {
     sample(async |client| {
-        for name in ["profile_top", "profile_find_symbols"] {
-            let arguments = if name == "profile_top" {
-                serde_json::json!({"normalize":true})
-            } else {
-                serde_json::json!({"query":"A","normalize":true})
-            };
-            assert!(
+        for (name, arguments) in [
+            ("profile_top", serde_json::json!({"metric":"unknown"})),
+            (
+                "profile_find_symbols",
+                serde_json::json!({"query":"A", "mode":"unknown"}),
+            ),
+            (
+                "profile_diff",
+                serde_json::json!({"baseline":"sample", "candidate":"sample", "sort":"unknown"}),
+            ),
+            (
+                "profile_diff",
+                serde_json::json!({"baseline":"sample", "candidate":"sample", "metric":"unknown"}),
+            ),
+            ("profile_top", serde_json::json!({"normalize":true})),
+            (
+                "profile_find_symbols",
+                serde_json::json!({"query":"A","normalize":true}),
+            ),
+            ("profile_find_symbols", serde_json::json!({})),
+            (
+                "profile_top",
+                serde_json::json!({"profile":"sample", "limti":1}),
+            ),
+            (
+                "profile_top",
+                serde_json::json!({"profile":"sample", "limit":"bad"}),
+            ),
+        ] {
+            assert_argument_error(
                 client
                     .call_tool(
                         CallToolRequestParams::new(name)
                             .with_arguments(arguments.as_object().unwrap().clone()),
                     )
                     .await
-                    .is_err(),
-                "{name}"
+                    .unwrap(),
             );
+        }
+        let error = client
+            .call_tool(CallToolRequestParams::new("unknown_tool"))
+            .await
+            .unwrap_err();
+        let rmcp::ServiceError::McpError(error) = error else {
+            panic!("expected protocol error for unknown tool: {error:?}");
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(error.message, "tool not found");
+        for arguments in [
+            serde_json::json!({"metric":"x".repeat(70_000)}),
+            serde_json::json!({"x".repeat(70_000):true}),
+        ] {
+            let result = client
+                .call_tool(
+                    CallToolRequestParams::new("profile_top")
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert!(serde_json::to_vec(&result).unwrap().len() <= 65536);
+            let error = error_payload(&result);
+            assert_eq!(error["code"], "query_too_large");
+            assert_eq!(error["details"]["limit_bytes"], 65536);
         }
         let error = client
             .call_tool(
@@ -363,36 +428,7 @@ async fn business_and_protocol_errors() {
             .await
             .unwrap();
         assert_eq!(error.is_error, Some(true));
-        assert_eq!(
-            error.structured_content.unwrap()["code"],
-            "profile_alias_not_found"
-        );
-        assert!(
-            client
-                .call_tool(
-                    CallToolRequestParams::new("profile_top").with_arguments(
-                        serde_json::json!({"profile":"sample", "limti":1})
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    ),
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            client
-                .call_tool(
-                    CallToolRequestParams::new("profile_top").with_arguments(
-                        serde_json::json!({"profile":"sample", "limit":"bad"})
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    ),
-                )
-                .await
-                .is_err()
-        );
+        assert_eq!(error_payload(&error)["code"], "profile_alias_not_found");
         let invalid_budget = client
             .call_tool(
                 CallToolRequestParams::new("profile_top").with_arguments(
@@ -405,10 +441,7 @@ async fn business_and_protocol_errors() {
             .await
             .unwrap();
         assert_eq!(invalid_budget.is_error, Some(true));
-        assert_eq!(
-            invalid_budget.structured_content.unwrap()["code"],
-            "invalid_budget"
-        );
+        assert_eq!(error_payload(&invalid_budget)["code"], "invalid_budget");
         let control_error = client
             .call_tool(
                 CallToolRequestParams::new("profile_paths").with_arguments(
@@ -667,10 +700,7 @@ async fn changed() {
                 .await
                 .unwrap();
             assert_eq!(response.is_error, Some(true));
-            assert_eq!(
-                response.structured_content.unwrap()["code"],
-                "profile_changed"
-            );
+            assert_eq!(error_payload(&response)["code"], "profile_changed");
         }
     })
     .await;
@@ -688,10 +718,7 @@ async fn invalid() {
                     .await
                     .unwrap();
                 assert_eq!(missing.is_error, Some(true));
-                assert_eq!(
-                    missing.structured_content.unwrap()["code"],
-                    "invalid_frame_selector"
-                );
+                assert_eq!(error_payload(&missing)["code"], "invalid_frame_selector");
             }
             let first = invoke(&client, tool, arguments).await;
             let token = first["data"]["continuations"][0]["continuation"].clone();
@@ -723,14 +750,11 @@ async fn invalid() {
                     .await
                     .unwrap();
                 assert_eq!(response.is_error, Some(true), "{tool}: {response:?}");
-                assert_eq!(
-                    response.structured_content.unwrap()["code"],
-                    "invalid_continuation"
-                );
+                assert_eq!(error_payload(&response)["code"], "invalid_continuation");
             }
             let mut malformed = token.clone();
             malformed["unexpected"] = serde_json::json!(true);
-            assert!(
+            assert_argument_error(
                 client
                     .call_tool(
                         CallToolRequestParams::new(tool).with_arguments(
@@ -738,10 +762,10 @@ async fn invalid() {
                                 .as_object()
                                 .unwrap()
                                 .clone(),
-                        )
+                        ),
                     )
                     .await
-                    .is_err()
+                    .unwrap(),
             );
             if tool != "profile_tree" {
                 let response = client
@@ -756,10 +780,7 @@ async fn invalid() {
                     .await
                     .unwrap();
                 assert_eq!(response.is_error, Some(true));
-                assert_eq!(
-                    response.structured_content.unwrap()["code"],
-                    "invalid_continuation"
-                );
+                assert_eq!(error_payload(&response)["code"], "invalid_continuation");
             }
         }
         for (tool, arguments) in [
@@ -778,15 +799,14 @@ async fn invalid() {
                 serde_json::json!({"profile_fingerprint":"old"}),
             ),
         ] {
-            assert!(
+            assert_argument_error(
                 client
                     .call_tool(
                         CallToolRequestParams::new(tool)
-                            .with_arguments(arguments.as_object().unwrap().clone())
+                            .with_arguments(arguments.as_object().unwrap().clone()),
                     )
                     .await
-                    .is_err(),
-                "{tool}"
+                    .unwrap(),
             );
         }
     })
@@ -849,17 +869,12 @@ async fn oversized_responses_are_structured_errors() {
             let result = client.call_tool(request.clone()).await.unwrap();
             assert_eq!(result.is_error, Some(true), "{tool}");
             assert!(serde_json::to_vec(&result).unwrap().len() <= 65536);
-            let value = result.structured_content.unwrap();
+            let value = error_payload(&result);
             assert_eq!(value["code"], "query_too_large");
             assert_eq!(value["details"]["resource"], "response_bytes");
             assert_eq!(value["details"]["limit_bytes"], 65536);
             assert_eq!(
-                client
-                    .call_tool(request)
-                    .await
-                    .unwrap()
-                    .structured_content
-                    .unwrap(),
+                error_payload(&client.call_tool(request).await.unwrap()),
                 value
             );
         }
@@ -879,6 +894,46 @@ async fn oversized_responses_are_structured_errors() {
             small.structured_content.unwrap()["data"]["matches"][0]["name"],
             "root"
         );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn structured_errors_survive_tool_discovery() {
+    sample(async |client| {
+        let tools = client.list_tools(None).await.unwrap();
+        for tool in tools.tools {
+            let arguments = match tool.name.as_ref() {
+                "profile_find_symbols" => serde_json::json!({"profile":"missing", "query":"A"}),
+                "profile_callers" | "profile_callees" | "profile_paths" => {
+                    serde_json::json!({"profile":"missing", "frame":{"frame_name":"A"}})
+                }
+                "profile_diff" => serde_json::json!({"baseline":"missing", "candidate":"sample"}),
+                _ => serde_json::json!({"profile":"missing"}),
+            };
+            let result = client
+                .call_tool(
+                    CallToolRequestParams::new(tool.name.clone())
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true), "{}", tool.name);
+            let error = error_payload(&result);
+            assert_eq!(error["code"], "profile_alias_not_found");
+            assert!(!error["retry_hint"].as_str().unwrap().is_empty());
+            for field in ["code", "message", "details", "retry_hint"] {
+                assert!(error.get(field).is_some(), "{}: {field}", tool.name);
+            }
+            assert!(!error["message"].as_str().unwrap().is_empty());
+            assert!(
+                result.content[0]
+                    .as_text()
+                    .unwrap()
+                    .text
+                    .contains("profile_alias_not_found")
+            );
+        }
     })
     .await;
 }

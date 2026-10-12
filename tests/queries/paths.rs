@@ -236,6 +236,18 @@ fn path_frame_budget() {
         "total_frame_budget"
     );
 
+    for response in [&bounded, &exact_row] {
+        let mut reason = response["truncation_reasons"][0]
+            .as_object()
+            .unwrap()
+            .clone();
+        reason.remove("kind");
+        assert_eq!(
+            serde_json::Value::Object(reason),
+            response["data"]["total_frame_budget"]
+        );
+    }
+
     let head = query::paths_with_window_budget(
         &profile,
         &selector,
@@ -396,4 +408,29 @@ fn path_construction_rejects_encoded_names_before_returning_json() {
         serde_json::json!(["root"])
     );
     assert_eq!(cropped["data"]["paths"][0]["weight"], 1);
+}
+
+#[test]
+fn mixed_path_truncations_keep_flat_fields_and_reason_order() {
+    let profile = support::profile("head;foo;tail 10\nhead;foo;tail2 5\nhead;foo;tail3 1\n");
+    let selector = FrameSelector {
+        frame_id: Some(support::frame(&profile, "foo")),
+        frame_name: None,
+    };
+    let paths = query::paths_with_window_budget(
+        &profile,
+        &selector,
+        2,
+        Some(FrameWindow::Head { lines: 2 }),
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        paths["truncation_reasons"],
+        serde_json::json!([
+            {"kind":"row_limit","limit":2,"returned":2,"available":3,"omitted":1},
+            {"kind":"frame_window","mode":"head","cropped_paths":2,"total_omitted_before":0,"total_omitted_after":2},
+            {"kind":"total_frame_budget","limit":1,"available":4,"returned":1,"omitted":3,"selected_paths":2,"returned_paths":1,"omitted_paths":1,"cropped_paths":1}
+        ])
+    );
 }

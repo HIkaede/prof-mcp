@@ -21,11 +21,23 @@ async fn resolve_aliases_safely() {
     );
 
     let manifest = workspace.path().join(".prof-mcp/manifest.json");
-    let mut value: serde_json::Value =
+    let original: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    value["profiles"]["ok"]["file"] = serde_json::json!("../escape.folded");
-    fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert_eq!(cache.load(None).await.unwrap_err().code, "registry_corrupt");
+    assert_eq!(original["schema_version"], 2);
+    for (field, malicious) in [
+        ("file", "../escape.folded"),
+        ("fingerprint", "../escape"),
+        ("fingerprint", "/tmp/escape"),
+        ("fingerprint", &"A".repeat(64)),
+        ("source_name", "../escape.folded"),
+    ] {
+        let mut value = original.clone();
+        value["profiles"]["ok"][field] = serde_json::json!(malicious);
+        fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(cache.load(None).await.unwrap_err().code, "registry_corrupt");
+    }
+    fs::write(&manifest, serde_json::to_vec(&original).unwrap()).unwrap();
+    assert_eq!(cache.load(None).await.unwrap().alias, "ok");
 }
 
 #[tokio::test]

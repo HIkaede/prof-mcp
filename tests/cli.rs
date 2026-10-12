@@ -17,13 +17,14 @@ fn manage_aliases() {
         .output()
         .unwrap();
     assert!(registered.status.success());
-    let legacy = Command::new(binary)
+    let candidate = Command::new(binary)
         .current_dir(workspace.path())
+        .arg("register")
         .arg(&second)
         .args(["--name", "candidate"])
         .output()
         .unwrap();
-    assert!(legacy.status.success());
+    assert!(candidate.status.success());
 
     let listed = Command::new(binary)
         .current_dir(workspace.path())
@@ -442,4 +443,24 @@ fn removed_flags_are_rejected() {
             .unwrap();
         assert!(!output.status.success());
     }
+}
+
+#[test]
+fn root_profile_argument_is_rejected_without_registration() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("sample.folded");
+    fs::write(&source, "root;leaf 1\n").unwrap();
+    let binary = env!("CARGO_BIN_EXE_prof-mcp");
+    let help = Command::new(binary)
+        .current_dir(workspace.path())
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let rejected = Command::new(binary)
+        .current_dir(workspace.path())
+        .arg(source)
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(!workspace.path().join(".prof-mcp").exists());
 }

@@ -1,13 +1,12 @@
 use std::{
     cmp::Reverse,
-    collections::BinaryHeap,
+    collections::{BinaryHeap, HashMap, hash_map::Entry},
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
 };
 
 use blake3::Hasher;
-use hashbrown::{HashMap, hash_map::Entry};
 
 use crate::{
     error::{ApiError, ProfileError},

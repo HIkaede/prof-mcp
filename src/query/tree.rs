@@ -7,7 +7,8 @@ use crate::output::{
 use serde_json::json;
 
 use super::{
-    ApiError, NodeId, Profile, RenderState, check_budget, envelope, percent, tree_reason_values,
+    ApiError, NodeId, Profile, RenderState, TreeTruncation, check_budget, envelope, percent,
+    tree_reason_values,
 };
 
 pub(crate) fn tree(
@@ -104,11 +105,11 @@ fn render_cct(
     for &child_id in children {
         let child = &profile.cct.nodes[child_id as usize];
         let reason = if depth >= state.max_depth {
-            Some("depth_limit")
+            Some(TreeTruncation::DepthLimit)
         } else if percent(child.total_weight, state.scope) < state.min_percent {
-            Some("min_scope_percent")
+            Some(TreeTruncation::MinScopePercent)
         } else if *state.budget == 0 {
-            Some("node_budget")
+            Some(TreeTruncation::NodeBudget)
         } else {
             None
         };
@@ -126,7 +127,7 @@ fn render_cct(
                     node_id: child_id,
                     frame_id,
                     name: profile.frame_name(frame_id).to_owned(),
-                    reason: reason.into(),
+                    reason,
                     continuation: Continuation {
                         profile: String::new(),
                         fingerprint: profile.source.fingerprint.clone(),

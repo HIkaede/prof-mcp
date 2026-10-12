@@ -1,7 +1,9 @@
 //! Structured-result tagging, text fallbacks, and error rendering.
 
 use rmcp::model::{CallToolResult, ContentBlock};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 use crate::error::ApiError;
 use crate::registry;
@@ -78,16 +80,14 @@ pub(crate) fn tag_registry(
     };
     if available > REGISTRY_PROFILE_LIMIT {
         value.truncated = true;
-        value.truncation_reasons.push(TruncationReason {
-            kind: "registry_profile_limit".into(),
-            details: [
-                ("limit".into(), json!(REGISTRY_PROFILE_LIMIT)),
-                ("returned".into(), json!(returned)),
-                ("available".into(), json!(available)),
-                ("omitted".into(), json!(available - returned)),
-            ]
-            .into(),
-        });
+        value
+            .truncation_reasons
+            .push(TruncationReason::RegistryProfileLimit {
+                limit: REGISTRY_PROFILE_LIMIT,
+                returned,
+                available,
+                omitted: available - returned,
+            });
     }
     value
 }
@@ -191,20 +191,11 @@ pub(crate) fn text_fallback(value: &Value) -> String {
     ))
 }
 pub(crate) fn failure(error: ApiError) -> CallToolResult {
-    let structured = serde_json::to_value(&error).unwrap_or_else(|_| {
-        json!({
-            "code":"internal_error",
-            "message":"Could not serialize error",
-            "details":null,
-            "retry_hint":"Retry."
-        })
+    let text = serde_json::to_string(&error).unwrap_or_else(|_| {
+        r#"{"code":"internal_error","message":"Could not serialize error","details":null,"retry_hint":"Retry."}"#.into()
     });
     let mut result = CallToolResult::default();
-    result.content = vec![ContentBlock::text(bounded_text(&format!(
-        "{}: {}",
-        error.code, error.message
-    )))];
-    result.structured_content = Some(structured);
+    result.content = vec![ContentBlock::text(text)];
     result.is_error = Some(true);
     bounded_result(result)
 }
@@ -212,7 +203,7 @@ pub(crate) fn failure(error: ApiError) -> CallToolResult {
 use crate::output::MAX_RESPONSE_BYTES;
 use crate::output::{ResponseBudget, response_too_large};
 
-fn bounded_result(result: CallToolResult) -> CallToolResult {
+pub(crate) fn bounded_result(result: CallToolResult) -> CallToolResult {
     if serde_json::to_writer(ResponseBudget::new(), &result).is_err() {
         return failure(response_too_large());
     }
@@ -248,7 +239,8 @@ mod text_tests {
         assert!(budget.write(b"d").is_err());
         let result = success(json!({"data":"\u{0000}".repeat(MAX_RESPONSE_BYTES / 2)}));
         assert_eq!(
-            result.structured_content.unwrap()["code"],
+            serde_json::from_str::<serde_json::Value>(&result.content[0].as_text().unwrap().text)
+                .unwrap()["code"],
             "query_too_large"
         );
         let error = failure(ApiError::new(
@@ -258,7 +250,8 @@ mod text_tests {
             "retry",
         ));
         assert_eq!(
-            error.structured_content.as_ref().unwrap()["code"],
+            serde_json::from_str::<serde_json::Value>(&error.content[0].as_text().unwrap().text)
+                .unwrap()["code"],
             "query_too_large"
         );
         assert!(serde_json::to_vec(&error).unwrap().len() <= MAX_RESPONSE_BYTES);
@@ -273,12 +266,22 @@ mod text_tests {
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
         assert!(text.ends_with('🙂') || text.ends_with('字') || text.ends_with('节'));
 
-        let failure = failure(ApiError::new("invalid_test", long, json!({}), "retry"));
+        let failure = failure(ApiError::new(
+            "invalid_test",
+            long.clone(),
+            json!({}),
+            "retry",
+        ));
         let fallback = &failure.content[0]
             .as_text()
             .expect("failure must include text content")
             .text;
-        assert!(fallback.len() <= 2048);
+        assert!(serde_json::to_vec(&failure).unwrap().len() <= MAX_RESPONSE_BYTES);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(fallback).unwrap()["message"],
+            long
+        );
+        assert!(failure.structured_content.is_none());
         assert!(!fallback.chars().any(char::is_control));
     }
 
@@ -290,7 +293,6 @@ mod text_tests {
                 fingerprint: "a".repeat(64),
                 source_name: "sample.folded".into(),
                 byte_len: 1,
-                registered_unix_ms: 0,
             })
             .collect();
         let value = tag_registry(

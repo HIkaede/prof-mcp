@@ -1,11 +1,13 @@
-use crate::output::{PathRow, PathsData, PathsOutput, ResponseBudget, TotalFrameBudget};
-use serde_json::{Value, json};
+use crate::output::{
+    FrameWindowMode, PathRow, PathsData, PathsOutput, ResponseBudget, TotalFrameBudget,
+};
+use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use super::{
-    ApiError, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES, Profile, check_limit, envelope,
-    percent, resolve_selector, row_limit_reason,
+    ApiError, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES, Profile, TruncationReason, check_limit,
+    envelope, percent, resolve_selector, row_limit_reason,
 };
 
 pub(crate) fn paths_with_window_budget(
@@ -115,19 +117,17 @@ pub(crate) fn paths_with_window_budget(
             budget_omitted_after: requested_frame_end - frame_end,
         });
     }
-    if window_cropped_paths > 0 {
-        truncation_reasons.push(json!({
-            "kind":"frame_window",
-            "mode":match window {
-                Some(FrameWindow::Head { .. })=>"head",
-                Some(FrameWindow::Tail { .. })=>"tail",
-                Some(FrameWindow::AroundTarget { .. })=>"around_target",
-                None=>"none"
+    if let Some(window) = window.filter(|_| window_cropped_paths > 0) {
+        truncation_reasons.push(TruncationReason::FrameWindow {
+            mode: match window {
+                FrameWindow::Head { .. } => FrameWindowMode::Head,
+                FrameWindow::Tail { .. } => FrameWindowMode::Tail,
+                FrameWindow::AroundTarget { .. } => FrameWindowMode::AroundTarget,
             },
-            "cropped_paths":window_cropped_paths,
-            "total_omitted_before":window_omitted_before,
-            "total_omitted_after":window_omitted_after
-        }));
+            cropped_paths: window_cropped_paths,
+            total_omitted_before: window_omitted_before,
+            total_omitted_after: window_omitted_after,
+        });
     }
     let budget_omitted = budget_available - budget_returned;
     let total_frame_budget = TotalFrameBudget {
@@ -141,13 +141,9 @@ pub(crate) fn paths_with_window_budget(
         cropped_paths: budget_cropped_paths,
     };
     if budget_omitted > 0 {
-        let mut reason = serde_json::to_value(&total_frame_budget)
-            .expect("static budget serializes")
-            .as_object()
-            .expect("static object")
-            .clone();
-        reason.insert("kind".into(), Value::String("total_frame_budget".into()));
-        truncation_reasons.push(Value::Object(reason));
+        truncation_reasons.push(TruncationReason::TotalFrameBudget(
+            total_frame_budget.clone(),
+        ));
     }
     Ok(envelope(
         profile,
