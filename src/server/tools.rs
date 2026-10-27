@@ -12,7 +12,7 @@ use super::outputs::{
     DiffOutput, DirectionOutput, FindOutput, PathsOutput, SummaryOutput, TopOutput, TreeOutput,
     typed_output_schema,
 };
-use super::respond::{failure, serialize, tag_alias, tag_direction, tag_registry, tag_tree};
+use super::respond::{failure, success, tag_alias, tag_direction, tag_registry, tag_tree};
 use crate::error::ApiError;
 use crate::query::{self, FrameSelector, FrameWindow};
 use crate::registry;
@@ -36,10 +36,10 @@ impl ProfileServer {
                 Ok((self.cache.load_resolved(resolved).await?, status))
             },
             |(loaded, status)| {
-                serialize(tag_registry(
-                    tag_alias(query::summary(&loaded.profile)?, &loaded.alias),
-                    status,
-                ))
+                let mut output = query::summary(&loaded.profile)?;
+                tag_alias(&mut output, &loaded.alias);
+                tag_registry(&mut output, status);
+                Ok(success(output))
             },
         )
         .await
@@ -50,8 +50,10 @@ impl ProfileServer {
         Parameters(input): Parameters<FindInput>,
     ) -> CallToolResult {
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
-            query::find_symbols(&loaded.profile, &input.query, input.mode, input.limit)
-                .and_then(|value| serialize(tag_alias(value, &loaded.alias)))
+            let mut output =
+                query::find_symbols(&loaded.profile, &input.query, input.mode, input.limit)?;
+            tag_alias(&mut output, &loaded.alias);
+            Ok(success(output))
         })
         .await
     }
@@ -71,10 +73,11 @@ impl ProfileServer {
                 frame.as_ref(),
                 input.name_regex.as_deref(),
                 &mut workspace,
-            )
-            .and_then(|value| serialize(tag_alias(value, &loaded.alias)));
+            );
             workspace.release_oversized();
-            result
+            let mut output = result?;
+            tag_alias(&mut output, &loaded.alias);
+            Ok(success(output))
         })
         .await
     }
@@ -101,15 +104,16 @@ impl ProfileServer {
                 .continuation
                 .as_ref()
                 .map_or([0, 0], |c| [c.cursor[0], c.cursor[1]]);
-            query::tree(
+            let mut output = query::tree(
                 &loaded.profile,
                 root,
                 input.continuation.as_ref().map(|c| c.fingerprint.as_str()),
                 input.max_depth,
                 input.max_nodes,
                 input.min_scope_percent,
-            )
-            .and_then(|value| serialize(tag_tree(value, &loaded.alias)))
+            )?;
+            tag_tree(&mut output, &loaded.alias);
+            Ok(success(output))
         })
         .await
     }
@@ -163,7 +167,7 @@ impl ProfileServer {
                 ContinuationTool::Callees => query::callees,
                 ContinuationTool::Tree => unreachable!("direction tool"),
             };
-            run(
+            let mut output = run(
                 &loaded.profile,
                 &frame,
                 input.max_depth,
@@ -173,8 +177,9 @@ impl ProfileServer {
                     .continuation
                     .as_ref()
                     .map(|c| (&c.cursor[1..], c.fingerprint.as_str())),
-            )
-            .and_then(|value| serialize(tag_direction(value, &loaded.alias)))
+            )?;
+            tag_direction(&mut output, &loaded.alias);
+            Ok(success(output))
         })
         .await
     }
@@ -186,14 +191,15 @@ impl ProfileServer {
         let frame = FrameSelector::from(input.frame);
         let frame_window = input.frame_window.map(FrameWindow::from);
         self.query(self.profile(input.profile.as_deref()), move |loaded| {
-            query::paths_with_window_budget(
+            let mut output = query::paths_with_window_budget(
                 &loaded.profile,
                 &frame,
                 input.limit,
                 frame_window,
                 input.max_total_frames,
-            )
-            .and_then(|value| serialize(tag_alias(value, &loaded.alias)))
+            )?;
+            tag_alias(&mut output, &loaded.alias);
+            Ok(success(output))
         })
         .await
     }
@@ -209,19 +215,17 @@ impl ProfileServer {
                 Ok((baseline, candidate))
             },
             move |(baseline, candidate)| {
-                query::diff(
+                let mut output = query::diff(
                     &baseline.profile,
                     &candidate.profile,
                     input.metric,
                     input.sort,
                     input.limit,
                     input.name_regex.as_deref(),
-                )
-                .and_then(|mut value| {
-                    value.baseline.alias = &baseline.alias;
-                    value.candidate.alias = &candidate.alias;
-                    serialize(value)
-                })
+                )?;
+                output.baseline.alias = &baseline.alias;
+                output.candidate.alias = &candidate.alias;
+                Ok(success(output))
             },
         )
         .await

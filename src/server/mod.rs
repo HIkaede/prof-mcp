@@ -88,7 +88,7 @@ impl ProfileServer {
     async fn query<T: Send + 'static>(
         &self,
         load: impl std::future::Future<Output = Result<T, ApiError>> + Send,
-        run: impl FnOnce(T) -> Result<serde_json::Value, ApiError> + Send + 'static,
+        run: impl FnOnce(T) -> Result<rmcp::model::CallToolResult, ApiError> + Send + 'static,
     ) -> rmcp::model::CallToolResult {
         // Bound cold loading, computation, and response shaping as one heavy operation.
         let permit = match self.query_gate.clone().acquire_owned().await {
@@ -103,7 +103,7 @@ impl ProfileServer {
             // Cancellation retains the permit until computation and response shaping finish.
             let _permit = permit;
             match run(loaded) {
-                Ok(value) => respond::success(value),
+                Ok(result) => result,
                 Err(error) => respond::failure(error),
             }
         })

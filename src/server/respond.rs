@@ -13,48 +13,42 @@ pub(crate) fn serialize(output: impl serde::Serialize) -> Result<Value, ApiError
         .map_err(|_| ApiError::internal("Could not serialize typed tool output"))
 }
 
-pub(crate) fn success(value: Value) -> CallToolResult {
-    let fallback = text_fallback(&value);
+pub(crate) fn success(
+    output: impl crate::output::FallbackText + serde::Serialize,
+) -> CallToolResult {
+    let fallback = bounded_text(&output.fallback());
+    let value = match serialize(output) {
+        Ok(value) => value,
+        Err(error) => return failure(error),
+    };
     let mut result = CallToolResult::default();
     result.content = vec![ContentBlock::text(fallback)];
     result.structured_content = Some(value);
     result.is_error = Some(false);
     bounded_result(result)
 }
-pub(crate) fn tag_alias<'a, T>(
-    mut value: crate::output::OutputEnvelope<'a, T>,
-    alias: &'a str,
-) -> crate::output::OutputEnvelope<'a, T> {
+pub(crate) fn tag_alias<'a, T>(value: &mut crate::output::OutputEnvelope<'a, T>, alias: &'a str) {
     value.profile.alias = alias;
-    value
 }
 
-pub(crate) fn tag_tree<'a>(
-    mut value: crate::output::TreeOutput<'a>,
-    alias: &'a str,
-) -> crate::output::TreeOutput<'a> {
+pub(crate) fn tag_tree<'a>(value: &mut crate::output::TreeOutput<'a>, alias: &'a str) {
     value.profile.alias = alias;
     for row in &mut value.data.continuations {
         row.continuation.profile = alias.into();
     }
-    value
 }
 
-pub(crate) fn tag_direction<'a>(
-    mut value: crate::output::DirectionOutput<'a>,
-    alias: &'a str,
-) -> crate::output::DirectionOutput<'a> {
+pub(crate) fn tag_direction<'a>(value: &mut crate::output::DirectionOutput<'a>, alias: &'a str) {
     value.profile.alias = alias;
     for row in &mut value.data.continuations {
         row.continuation.profile = alias.into();
     }
-    value
 }
 
-pub(crate) fn tag_registry<'a>(
-    mut value: crate::output::SummaryOutput<'a>,
+pub(crate) fn tag_registry(
+    value: &mut crate::output::SummaryOutput<'_>,
     status: registry::RegistryStatus,
-) -> crate::output::SummaryOutput<'a> {
+) {
     use crate::output::{RegistryOutput, TruncationReason};
     const REGISTRY_PROFILE_LIMIT: usize = 100;
     let registry::RegistryStatus {
@@ -94,111 +88,8 @@ pub(crate) fn tag_registry<'a>(
                 omitted: available - returned,
             });
     }
-    value
 }
 
-pub(crate) fn text_fallback(value: &Value) -> String {
-    let truncated = value["truncated"].as_bool().unwrap_or(false);
-    let reasons = value["truncation_reasons"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item["kind"].as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .unwrap_or_default();
-    let alias = value["profile"]["alias"]
-        .as_str()
-        .or_else(|| value["candidate"]["alias"].as_str())
-        .unwrap_or("-");
-    let data = &value["data"];
-    let detail = if let Some(total) = data["total_weight"].as_u64() {
-        let top = data["top_self"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .take(3)
-            .filter_map(|row| {
-                Some(format!(
-                    "{}:{}",
-                    row["name"].as_str()?,
-                    row["self_weight"].as_u64()?
-                ))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            "total_weight={total}, frames={}, stacks={}, top_self=[{top}]",
-            data["frame_count"].as_u64().unwrap_or(0),
-            data["unique_stack_count"].as_u64().unwrap_or(0)
-        )
-    } else if let Some(matches) = data["matches"].as_array() {
-        let names = matches
-            .iter()
-            .take(5)
-            .filter_map(|row| row["name"].as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("matches={} [{names}]", matches.len())
-    } else if let Some(paths) = data["paths"].as_array() {
-        let window = paths.first().map_or_else(
-            || "no paths".to_owned(),
-            |path| {
-                format!(
-                    "first_window={}..{}/{} target_display={}",
-                    path["frame_start"].as_u64().unwrap_or(0),
-                    path["frame_end"].as_u64().unwrap_or(0),
-                    path["total_depth"].as_u64().unwrap_or(0),
-                    path["display_target_positions"]
-                )
-            },
-        );
-        format!("paths={} {window}", paths.len())
-    } else if let Some(rows) = data["rows"].as_array() {
-        if rows.first().is_some_and(|row| row["delta_pp"].is_number()) {
-            let changes = rows
-                .iter()
-                .take(5)
-                .filter_map(|row| {
-                    Some(format!(
-                        "{}:{:+.4}pp",
-                        row["name"].as_str()?,
-                        row["delta_pp"].as_f64()?
-                    ))
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("rows={} changes=[{changes}]", rows.len())
-        } else {
-            let names = rows
-                .iter()
-                .take(5)
-                .filter_map(|row| row["name"].as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("rows={} [{names}]", rows.len())
-        }
-    } else if let Some(frame) = data["frame"]["name"].as_str() {
-        format!(
-            "frame={frame}, scope_weight={}, continuations={}",
-            value["scope_weight"],
-            data["continuations"].as_array().map_or(0, Vec::len)
-        )
-    } else if let Some(continuations) = data["continuations"].as_array() {
-        format!(
-            "tree_root={}, continuations={}",
-            data["root"]["name"],
-            continuations.len()
-        )
-    } else {
-        format!("scope_weight={}", value["scope_weight"])
-    };
-    bounded_text(&format!(
-        "profile={alias}; truncated={truncated}; reasons=[{reasons}]; {detail}"
-    ))
-}
 pub(crate) fn failure(error: ApiError) -> CallToolResult {
     let text = serde_json::to_string(&error).unwrap_or_else(|_| {
         r#"{"code":"internal_error","message":"Could not serialize error","details":null,"retry_hint":"Retry."}"#.into()
@@ -250,6 +141,17 @@ pub(crate) fn bounded_text(input: &str) -> String {
 #[cfg(test)]
 mod text_tests {
     use super::*;
+    use crate::output::FallbackText;
+    use crate::query::{FrameSelector, TopSort};
+
+    fn profile() -> crate::profile::Profile {
+        crate::profile::ProfileBuilder::new(crate::profile::BuildLimits::default())
+            .from_reader(
+                std::io::Cursor::new(b"root;leaf 3\nroot;other 1\n"),
+                "/text.folded".into(),
+            )
+            .unwrap()
+    }
 
     #[test]
     fn count_encoded_response_bytes() {
@@ -257,7 +159,10 @@ mod text_tests {
         let mut budget = ResponseBudget(3);
         assert_eq!(budget.write(b"abc").unwrap(), 3);
         assert!(budget.write(b"d").is_err());
-        let result = success(json!({"data":"\u{0000}".repeat(MAX_RESPONSE_BYTES / 2)}));
+        let profile = profile();
+        let mut summary = crate::query::summary(&profile).unwrap();
+        summary.data.registry.registry_root = "x".repeat(MAX_RESPONSE_BYTES);
+        let result = success(summary);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&result.content[0].as_text().unwrap().text)
                 .unwrap()["code"],
@@ -278,25 +183,126 @@ mod text_tests {
     }
 
     #[test]
-    fn direction_text_reports_continuations() {
-        let value = serde_json::json!({
-            "profile": {"alias": "sample"},
-            "truncated": true,
-            "truncation_reasons": [{"kind": "node_budget"}],
-            "scope_weight": 5,
-            "data": {
-                "frame": {"name": "anchor"},
-                "root": {"name": "anchor"},
-                "continuations": [{}, {}]
-            }
-        });
-        let text = text_fallback(&value);
+    fn summary_text_reports_totals_and_top_frames() {
+        let profile = profile();
+        let mut summary = crate::query::summary(&profile).unwrap();
+        tag_alias(&mut summary, "sample");
+        let text = summary.fallback();
         assert!(
-            text.contains("frame=anchor, scope_weight=5, continuations=2"),
+            text.contains("profile=sample; truncated=false; reasons=[]; total_weight=4, frames=3, stacks=2, top_self=[leaf:3"),
             "{text}"
         );
-        assert!(text.contains("truncated=true"), "{text}");
-        assert!(text.contains("reasons=[node_budget]"), "{text}");
+    }
+
+    #[test]
+    fn tree_text_reports_root_and_continuations() {
+        let profile = profile();
+        let root = [profile.cct.root, 0];
+        let cut = crate::query::tree(&profile, root, None, 8, 1, 0.0).unwrap();
+        assert_eq!(cut.data.root.name, None, "virtual root has no frame");
+        let child = &cut.data.continuations[0];
+        let mut child_tree = crate::query::tree(
+            &profile,
+            child.node_id,
+            Some(&profile.source.fingerprint),
+            8,
+            100,
+            0.0,
+        )
+        .unwrap();
+        tag_tree(&mut child_tree, "sample");
+        let text = child_tree.fallback();
+        assert!(
+            text.contains(&format!(
+                "tree_root={}, continuations={}",
+                child.name,
+                child_tree.data.continuations.len()
+            )),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn direction_text_reports_frame_and_scope() {
+        let profile = profile();
+        let selector = FrameSelector {
+            frame_id: Some(profile.frame_id("leaf").unwrap()),
+            frame_name: None,
+        };
+        let mut direction = crate::query::callers(&profile, &selector, 8, 100, 0.0, None).unwrap();
+        tag_direction(&mut direction, "sample");
+        let text = direction.fallback();
+        assert!(
+            text.contains("frame=leaf, scope_weight=3, continuations="),
+            "{text}"
+        );
+        assert!(text.contains("truncated=false"), "{text}");
+    }
+
+    #[test]
+    fn find_and_top_text_list_names() {
+        let profile = profile();
+        let mut find =
+            crate::query::find_symbols(&profile, "lea", crate::query::MatchMode::Contains, 10)
+                .unwrap();
+        tag_alias(&mut find, "sample");
+        assert!(
+            find.fallback().contains("matches=1 [leaf]"),
+            "{}",
+            find.fallback()
+        );
+        let mut top = crate::query::top_with_workspace(
+            &profile,
+            TopSort::SelfWeight,
+            10,
+            None,
+            None,
+            &mut crate::query::TopWorkspace::default(),
+        )
+        .unwrap();
+        tag_alias(&mut top, "sample");
+        assert!(
+            top.fallback().contains("rows=3 [leaf, other, root]"),
+            "{}",
+            top.fallback()
+        );
+    }
+
+    #[test]
+    fn paths_text_reports_first_window() {
+        let profile = profile();
+        let selector = FrameSelector {
+            frame_id: Some(profile.frame_id("leaf").unwrap()),
+            frame_name: None,
+        };
+        let mut paths =
+            crate::query::paths_with_window_budget(&profile, &selector, 10, None, 100).unwrap();
+        tag_alias(&mut paths, "sample");
+        let text = paths.fallback();
+        assert!(text.contains("paths=1 first_window="), "{text}");
+        assert!(text.contains("target_display=[1]"), "{text}");
+    }
+
+    #[test]
+    fn diff_text_reports_changes() {
+        let profile = profile();
+        let mut diff = crate::query::diff(
+            &profile,
+            &profile,
+            TopSort::SelfWeight,
+            crate::query::DiffSort::Absolute,
+            10,
+            None,
+        )
+        .unwrap();
+        diff.baseline.alias = "base";
+        diff.candidate.alias = "next";
+        let text = diff.fallback();
+        assert!(
+            text.starts_with("profile=next; truncated=false; reasons=[];"),
+            "{text}"
+        );
+        assert!(text.contains("changes=["), "{text}");
     }
 
     #[test]
@@ -343,8 +349,9 @@ mod text_tests {
                 "/summary.folded".into(),
             )
             .unwrap();
-        let value = tag_registry(
-            crate::query::summary(&profile).unwrap(),
+        let mut value = crate::query::summary(&profile).unwrap();
+        tag_registry(
+            &mut value,
             registry::RegistryStatus {
                 registry_root: std::path::PathBuf::from(".prof-mcp"),
                 active: "p100".into(),

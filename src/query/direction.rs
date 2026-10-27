@@ -3,8 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::output::{
-    Continuation, ContinuationTool, DirectionContinuation, DirectionData, DirectionOutput,
-    ResponseBudget, TreeNode,
+    Continuation, ContinuationTool, DirectionContinuation, DirectionData, DirectionOutput, TreeNode,
 };
 use hashbrown::HashMap;
 use serde_json::json;
@@ -176,20 +175,18 @@ fn directional<'p>(
     let mut reason_stats = BTreeMap::new();
     let mut continuations = Vec::new();
     let mut continuation_count = 0usize;
-    let mut render = RenderState {
+    let mut render = RenderState::new(
         scope,
         max_depth,
-        min_percent: min_scope_percent,
-        budget: &mut budget,
-        reason_stats: &mut reason_stats,
-        continuations: &mut continuations,
-        continuation_count: &mut continuation_count,
-        continuation_limit: 128,
-        bytes: ResponseBudget::new(),
-        frame_path: continuation
-            .map(|(path, _)| path.to_vec())
-            .unwrap_or_default(),
-    };
+        min_scope_percent,
+        &mut budget,
+        &mut reason_stats,
+        &mut continuations,
+        &mut continuation_count,
+    );
+    render.frame_path = continuation
+        .map(|(path, _)| path.to_vec())
+        .unwrap_or_default();
     render.bytes.row_name(profile.frame_name(frame))?;
     let root = Node {
         frame: prefix.last().copied().unwrap_or(frame),
@@ -662,9 +659,6 @@ impl<'p> Walk<'p> {
     }
 }
 
-#[cfg(test)]
-#[path = "direction/oracle.rs"]
-mod oracle;
 #[cfg(test)]
 #[path = "direction/tests.rs"]
 mod tests;

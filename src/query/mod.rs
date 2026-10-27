@@ -85,21 +85,13 @@ pub(crate) fn resolve_selector(
             if (*id as usize) < profile.frames.len() {
                 Ok(*id)
             } else {
-                Err(ApiError::new(
-                    "frame_not_found",
-                    format!("Frame id not found: {id}"),
-                    json!({"frame_id":id}),
+                Err(ApiError::frame_not_found(
                     "Call profile_find_symbols to discover valid frame ids.",
                 ))
             }
         }
         (None, Some(name)) => profile.frame_id(name).ok_or_else(|| {
-            ApiError::new(
-                "frame_not_found",
-                format!("Frame not found: {name}"),
-                json!({"frame_name":name}),
-                "Call profile_find_symbols to discover exact frame names.",
-            )
+            ApiError::frame_not_found("Call profile_find_symbols to discover exact frame names.")
         }),
     }
 }
@@ -116,14 +108,7 @@ pub(crate) fn compile_regex(pattern: &str) -> Result<Regex, ApiError> {
         .size_limit(10 * 1024 * 1024)
         .dfa_size_limit(2 * 1024 * 1024)
         .build()
-        .map_err(|error| {
-            ApiError::new(
-                "invalid_regex",
-                format!("Invalid regex: {error}"),
-                json!({"pattern":pattern}),
-                "Simplify the regex or fix its syntax and retry.",
-            )
-        })
+        .map_err(|error| ApiError::invalid_regex(pattern, error.to_string()))
 }
 pub(crate) fn check_limit(
     value: usize,
@@ -132,12 +117,7 @@ pub(crate) fn check_limit(
     field: &str,
 ) -> Result<(), ApiError> {
     if value < min || value > max {
-        Err(ApiError::new(
-            "invalid_budget",
-            format!("{field} must be between {min} and {max}"),
-            json!({field:value,"min":min,"max":max}),
-            "Use a documented output budget.",
-        ))
+        Err(ApiError::out_of_range(field, value, min, max))
     } else {
         Ok(())
     }
@@ -247,6 +227,32 @@ impl<C> RenderState<'_, C> {
         let stats = self.reason_stats.entry(reason).or_default();
         stats.count = stats.count.saturating_add(1);
         stats.weight = stats.weight.saturating_add(weight);
+    }
+}
+
+impl<'a, C> RenderState<'a, C> {
+    /// Create a new render state with sensible defaults.
+    pub(crate) fn new(
+        scope: u64,
+        max_depth: usize,
+        min_percent: f64,
+        budget: &'a mut usize,
+        reason_stats: &'a mut BTreeMap<TreeTruncation, TruncationStats>,
+        continuations: &'a mut Vec<C>,
+        continuation_count: &'a mut usize,
+    ) -> Self {
+        Self {
+            scope,
+            max_depth,
+            min_percent,
+            budget,
+            reason_stats,
+            continuations,
+            continuation_count,
+            continuation_limit: 128,
+            frame_path: Vec::new(),
+            bytes: crate::output::ResponseBudget::new(),
+        }
     }
 }
 

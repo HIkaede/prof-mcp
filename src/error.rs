@@ -34,6 +34,33 @@ impl ApiError {
             "Check server stderr and retry.",
         )
     }
+    /// Frame ID not found by index or name.
+    pub fn frame_not_found(hint: impl Into<String>) -> Self {
+        Self::new(
+            "frame_not_found",
+            "Frame not found in profile",
+            Value::Null,
+            hint,
+        )
+    }
+    /// Invalid regex pattern.
+    pub fn invalid_regex(pattern: &str, reason: impl Into<String>) -> Self {
+        Self::new(
+            "invalid_regex",
+            format!("Invalid regex: {}", reason.into()),
+            serde_json::json!({"pattern": pattern}),
+            "Simplify the regex or fix its syntax and retry.",
+        )
+    }
+    /// Parameter out of range.
+    pub fn out_of_range(field: &str, value: usize, min: usize, max: usize) -> Self {
+        Self::new(
+            "invalid_budget",
+            format!("{field} must be between {min} and {max}"),
+            serde_json::json!({"field": field, "min": min, "max": max, "value": value}),
+            "Use a documented output budget.",
+        )
+    }
 }
 
 impl fmt::Display for ApiError {

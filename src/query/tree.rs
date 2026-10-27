@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::output::{
-    Continuation, ContinuationTool, ResponseBudget, TreeContinuation, TreeData, TreeNode,
-    TreeOutput,
+    Continuation, ContinuationTool, TreeContinuation, TreeData, TreeNode, TreeOutput,
 };
 use serde_json::json;
 
@@ -66,18 +65,15 @@ pub fn tree<'p>(
     let mut reason_stats = BTreeMap::new();
     let mut continuations = Vec::new();
     let mut continuation_count = 0usize;
-    let mut render = RenderState {
-        scope: root.total_weight,
+    let mut render = RenderState::new(
+        root.total_weight,
         max_depth,
-        min_percent: min_scope_percent,
-        budget: &mut budget,
-        reason_stats: &mut reason_stats,
-        continuations: &mut continuations,
-        continuation_count: &mut continuation_count,
-        continuation_limit: 128,
-        frame_path: Vec::new(),
-        bytes: ResponseBudget::new(),
-    };
+        min_scope_percent,
+        &mut budget,
+        &mut reason_stats,
+        &mut continuations,
+        &mut continuation_count,
+    );
     let (node, _) = render_cct(profile, root_node_id, 0, &mut render)?;
     let continuations_truncated = continuation_count > continuations.len();
     let truncation_reasons =

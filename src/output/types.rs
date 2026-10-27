@@ -301,3 +301,170 @@ pub enum ContinuationTool {
     #[serde(rename = "profile_callees")]
     Callees,
 }
+
+impl TruncationReason {
+    /// The `kind` tag serde emits for this variant.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::RowLimit { .. } => "row_limit",
+            Self::DepthLimit { .. } => "depth_limit",
+            Self::NodeBudget { .. } => "node_budget",
+            Self::MinScopePercent { .. } => "min_scope_percent",
+            Self::FrameWindow { .. } => "frame_window",
+            Self::TotalFrameBudget(_) => "total_frame_budget",
+            Self::RegistryProfileLimit { .. } => "registry_profile_limit",
+        }
+    }
+}
+
+/// One-line text for clients that read `content` and ignore `structured_content`.
+///
+/// Implemented on the typed outputs so the text cannot drift from the payload:
+/// the compiler checks every field it reads.
+pub(crate) trait FallbackText {
+    fn fallback(&self) -> String;
+}
+
+fn fallback_line(
+    alias: &str,
+    truncated: bool,
+    reasons: &[TruncationReason],
+    detail: &str,
+) -> String {
+    let reasons = reasons
+        .iter()
+        .map(TruncationReason::kind)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("profile={alias}; truncated={truncated}; reasons=[{reasons}]; {detail}")
+}
+
+fn names<T>(rows: &[T], limit: usize, name: impl Fn(&T) -> &str) -> String {
+    rows.iter()
+        .take(limit)
+        .map(|row| name(row).to_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl FallbackText for SummaryOutput<'_> {
+    fn fallback(&self) -> String {
+        let top = self
+            .data
+            .top_self
+            .iter()
+            .take(3)
+            .map(|row| format!("{}:{}", row.name, row.self_weight))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fallback_line(
+            self.profile.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!(
+                "total_weight={}, frames={}, stacks={}, top_self=[{top}]",
+                self.data.total_weight, self.data.frame_count, self.data.unique_stack_count
+            ),
+        )
+    }
+}
+
+impl FallbackText for FindOutput<'_> {
+    fn fallback(&self) -> String {
+        let names = names(&self.data.matches, 5, |row| row.name);
+        fallback_line(
+            self.profile.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!("matches={} [{names}]", self.data.matches.len()),
+        )
+    }
+}
+
+impl FallbackText for TopOutput<'_> {
+    fn fallback(&self) -> String {
+        let names = names(&self.data.rows, 5, |row| row.name);
+        fallback_line(
+            self.profile.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!("rows={} [{names}]", self.data.rows.len()),
+        )
+    }
+}
+
+impl FallbackText for PathsOutput<'_> {
+    fn fallback(&self) -> String {
+        let window = self.data.paths.first().map_or_else(
+            || "no paths".to_owned(),
+            |path| {
+                let display = path
+                    .display_target_positions
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "first_window={}..{}/{} target_display=[{display}]",
+                    path.frame_start, path.frame_end, path.total_depth
+                )
+            },
+        );
+        fallback_line(
+            self.profile.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!("paths={} {window}", self.data.paths.len()),
+        )
+    }
+}
+
+impl FallbackText for TreeOutput<'_> {
+    fn fallback(&self) -> String {
+        fallback_line(
+            self.profile.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!(
+                "tree_root={}, continuations={}",
+                self.data.root.name.unwrap_or("-"),
+                self.data.continuations.len()
+            ),
+        )
+    }
+}
+
+impl FallbackText for DirectionOutput<'_> {
+    fn fallback(&self) -> String {
+        fallback_line(
+            self.profile.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!(
+                "frame={}, scope_weight={}, continuations={}",
+                self.data.frame.name,
+                self.scope_weight,
+                self.data.continuations.len()
+            ),
+        )
+    }
+}
+
+impl FallbackText for DiffOutput<'_> {
+    fn fallback(&self) -> String {
+        let changes = self
+            .data
+            .rows
+            .iter()
+            .take(5)
+            .map(|row| format!("{}:{:+.4}pp", row.name, row.delta_pp))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fallback_line(
+            self.candidate.alias,
+            self.truncated,
+            &self.truncation_reasons,
+            &format!("rows={} changes=[{changes}]", self.data.rows.len()),
+        )
+    }
+}

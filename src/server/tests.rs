@@ -85,7 +85,7 @@ async fn query_worker() {
                     let _workspace = workspace.blocking_lock();
                     started.send(()).unwrap();
                     let _ = wait.recv();
-                    Ok(json!({}))
+                    Ok(rmcp::model::CallToolResult::default())
                 })
                 .await
         });
@@ -101,7 +101,7 @@ async fn query_worker() {
                         loading.send(()).unwrap();
                         Ok(())
                     },
-                    |()| Ok(json!({})),
+                    |()| Ok(rmcp::model::CallToolResult::default()),
                 )
                 .await
         });

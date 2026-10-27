@@ -32,7 +32,7 @@ pub(crate) fn serialize_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::
 where
     S: serde::Serializer,
 {
-    serializer.serialize_str(&path_text(path))
+    serializer.collect_str(&path.display())
 }
 
 pub(crate) fn source_error(path: &Path, error: std::io::Error) -> ApiError {
@@ -58,4 +58,16 @@ pub(crate) fn profile_too_large(byte_len: u64, max_bytes: u64) -> ApiError {
         json!({"byte_len":byte_len,"max_bytes":max_bytes}),
         "Use a smaller profile or raise --max-file-size-mib.",
     )
+}
+
+/// Helper trait for registry I/O error context.
+/// Usage: `fs::write(path, data).context_path(&path)?`
+pub(crate) trait RegistryContext<T> {
+    fn context_path(self, path: &Path) -> Result<T, ApiError>;
+}
+
+impl<T> RegistryContext<T> for std::io::Result<T> {
+    fn context_path(self, path: &Path) -> Result<T, ApiError> {
+        self.map_err(|error| registry_io(path, error))
+    }
 }

@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use super::errors::registry_io;
+use super::errors::{RegistryContext, registry_io};
 use crate::error::ApiError;
 
 pub(crate) fn atomic_write_bytes(destination: &Path, bytes: &[u8]) -> Result<(), ApiError> {
@@ -47,7 +47,7 @@ fn atomic_copy_with_sync(
         .create_new(true)
         .mode(0o600)
         .open(&temp)
-        .map_err(|error| registry_io(destination, error))?;
+        .context_path(destination)?;
     let result = (|| -> std::io::Result<()> {
         io::copy(&mut reader, &mut file)?;
         file.sync_all()?;
@@ -56,7 +56,7 @@ fn atomic_copy_with_sync(
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
-    result.map_err(|error| registry_io(destination, error))?;
+    result.context_path(destination)?;
     sync_parent(parent).map_err(|error| {
         let mut error = registry_io(destination, error);
         // Rename already committed; callers must not delete its referenced blobs.

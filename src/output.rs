@@ -92,6 +92,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn truncation_kind_matches_serde_tag() {
+        let reasons = [
+            TruncationReason::RowLimit {
+                limit: 1,
+                returned: 1,
+                available: 2,
+                omitted: 1,
+            },
+            TruncationReason::DepthLimit {
+                max_depth: 1,
+                omitted_children: 1,
+                omitted_weight: 1,
+            },
+            TruncationReason::NodeBudget {
+                max_nodes: 1,
+                omitted_children: 1,
+                omitted_weight: 1,
+            },
+            TruncationReason::MinScopePercent {
+                threshold: 1.0,
+                omitted_children: 1,
+                omitted_weight: 1,
+            },
+            TruncationReason::FrameWindow {
+                mode: FrameWindowMode::Head,
+                cropped_paths: 1,
+                total_omitted_before: 1,
+                total_omitted_after: 1,
+            },
+            TruncationReason::TotalFrameBudget(TotalFrameBudget {
+                limit: 1,
+                available: 2,
+                returned: 1,
+                omitted: 1,
+                selected_paths: 1,
+                returned_paths: 1,
+                omitted_paths: 0,
+                cropped_paths: 0,
+            }),
+            TruncationReason::RegistryProfileLimit {
+                limit: 1,
+                returned: 1,
+                available: 2,
+                omitted: 1,
+            },
+        ];
+        for reason in reasons {
+            assert_eq!(
+                serde_json::to_value(&reason).unwrap()["kind"],
+                reason.kind()
+            );
+        }
+    }
+
+    #[test]
     fn rows_borrow_model_strings() {
         let profile = crate::profile::ProfileBuilder::new(crate::profile::BuildLimits::default())
             .from_reader(
