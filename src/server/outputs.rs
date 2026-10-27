@@ -19,7 +19,7 @@ pub(crate) fn typed_output_schema<T: JsonSchema>() -> Arc<serde_json::Map<String
         .expect("derived output schema has properties");
     properties.insert(
         "schema_version".into(),
-        json!({"type":"string","const":"2"}),
+        json!({"type":"string","const":crate::output::SCHEMA_VERSION}),
     );
     schema.into()
 }

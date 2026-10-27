@@ -863,3 +863,97 @@ fn missing_alias_details_are_bounded() {
     assert_eq!(error.details["omitted"], 1);
     assert_eq!(error.details["available"][0], "p000");
 }
+
+const IGNORE_CONTENT: &str = "\
+# prof-mcp data files are local to this workspace.
+# Keep this file visible so the registry directory can be intentionally ignored.
+*
+!.gitignore
+";
+
+#[cfg(unix)]
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_registry_is_private() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    let registered = registry::register(workspace.path(), &source, None, 1024).unwrap();
+    let state = workspace.path().join(".prof-mcp");
+    assert_eq!(mode_of(&state), 0o700);
+    assert_eq!(mode_of(&state.join("profiles")), 0o700);
+    assert_eq!(mode_of(&state.join("manifest.json")), 0o600);
+    assert_eq!(
+        mode_of(
+            &state
+                .join("profiles")
+                .join(format!("{}.folded", registered.fingerprint))
+        ),
+        0o600
+    );
+    assert_eq!(mode_of(&state.join(".gitignore")), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn repair_edited_ignore_file() {
+    let workspace = tempdir().unwrap();
+    let state = workspace.path().join(".prof-mcp");
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join(".gitignore"), b"mine\n").unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    registry::register(workspace.path(), &source, None, 1024).unwrap();
+    assert_eq!(
+        fs::read_to_string(state.join(".gitignore")).unwrap(),
+        IGNORE_CONTENT
+    );
+}
+
+#[test]
+fn reading_layout_never_creates_directories() {
+    let workspace = tempdir().unwrap();
+    let state = workspace.path().join(".prof-mcp");
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    registry::register(workspace.path(), &source, None, 1024).unwrap();
+
+    fs::remove_dir_all(state.join("profiles")).unwrap();
+    registry::status(workspace.path()).unwrap();
+    assert!(!state.join("profiles").exists());
+    assert_eq!(
+        registry::gc(workspace.path(), true).unwrap_err().code,
+        "registry_corrupt"
+    );
+    assert!(!state.join("profiles").exists());
+}
+
+#[test]
+fn activating_a_missing_blob_fails() {
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("input.folded");
+    fs::write(&source, "root;A 1\n").unwrap();
+    registry::register(workspace.path(), &source, Some("first"), 1024).unwrap();
+    fs::write(&source, "root;B 1\n").unwrap();
+    let second = registry::register(workspace.path(), &source, Some("second"), 1024).unwrap();
+    registry::set_active(workspace.path(), "first").unwrap();
+    fs::remove_file(
+        workspace
+            .path()
+            .join(".prof-mcp/profiles")
+            .join(format!("{}.folded", second.fingerprint)),
+    )
+    .unwrap();
+    assert_eq!(
+        registry::set_active(workspace.path(), "second")
+            .unwrap_err()
+            .code,
+        "registry_corrupt"
+    );
+    assert_eq!(registry::status(workspace.path()).unwrap().active, "first");
+}

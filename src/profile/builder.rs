@@ -338,7 +338,6 @@ impl ProfileBuilder {
                 .cmp(&a.affected_weight)
                 .then(a.frame.cmp(&b.frame))
         });
-        recursive.truncate(5);
         profile.recursive_frames = recursive.into_boxed_slice();
         let mut seen = vec![u32::MAX; frame_count];
         let mut packed_positions = vec![0u32; frame_count];

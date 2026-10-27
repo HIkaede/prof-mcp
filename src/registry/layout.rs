@@ -1,6 +1,7 @@
 //! Registry directory layout: fixed names, ignore file, and blob naming.
 
 use std::fs;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use serde_json::json;
@@ -26,31 +27,37 @@ pub(crate) fn profile_file(fingerprint: &str) -> String {
     format!("{PROFILES_DIR}/{fingerprint}.folded")
 }
 
-pub(crate) fn ensure_registry_layout(state: &Path) -> Result<(), ApiError> {
-    ensure_real_directory(state, true, "Workspace .prof-mcp path")?;
-    ensure_profiles_dir(state, true)?;
-    ensure_ignore_file(state)
+pub(crate) fn ensure_registry_layout(state: &Path, create: bool) -> Result<(), ApiError> {
+    ensure_real_directory(state, create, "Workspace .prof-mcp path")?;
+    ensure_profiles_dir(state, create)?;
+    ensure_ignore_file(state, create)
 }
 
 pub(crate) fn ensure_profiles_dir(state: &Path, create: bool) -> Result<(), ApiError> {
     ensure_real_directory(&state.join(PROFILES_DIR), create, "Registry profiles path")
 }
 
-pub(crate) fn ensure_ignore_file(state: &Path) -> Result<(), ApiError> {
+pub(crate) fn ensure_ignore_file(state: &Path, repair: bool) -> Result<(), ApiError> {
+    // Only registration touches the ignore file; queries and gc stay read-only.
+    if !repair {
+        return Ok(());
+    }
     let path = state.join(IGNORE);
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            atomic_write_bytes(&path, IGNORE_CONTENT.as_bytes())
-        }
+    let current = match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_file() => {
-            Err(corrupt(
+            return Err(corrupt(
                 "Registry .gitignore is not a regular file",
                 json!({"path":path_text(&path)}),
-            ))
+            ));
         }
-        Ok(_) => Ok(()),
-        Err(error) => Err(registry_io(&path, error)),
+        Ok(_) => Some(fs::read(&path).map_err(|error| registry_io(&path, error))?),
+        Err(error) => return Err(registry_io(&path, error)),
+    };
+    if current.as_deref() == Some(IGNORE_CONTENT.as_bytes()) {
+        return Ok(());
     }
+    atomic_write_bytes(&path, IGNORE_CONTENT.as_bytes())
 }
 
 pub(crate) fn ensure_real_directory(
@@ -60,7 +67,9 @@ pub(crate) fn ensure_real_directory(
 ) -> Result<(), ApiError> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => {
-            if let Err(error) = fs::create_dir(path)
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            if let Err(error) = builder.create(path)
                 && error.kind() != std::io::ErrorKind::AlreadyExists
             {
                 return Err(registry_io(path, error));

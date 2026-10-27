@@ -181,7 +181,11 @@ pub(crate) fn text_fallback(value: &Value) -> String {
             format!("rows={} [{names}]", rows.len())
         }
     } else if let Some(frame) = data["frame"]["name"].as_str() {
-        format!("frame={frame}, scope_weight={}", value["scope_weight"])
+        format!(
+            "frame={frame}, scope_weight={}, continuations={}",
+            value["scope_weight"],
+            data["continuations"].as_array().map_or(0, Vec::len)
+        )
     } else if let Some(continuations) = data["continuations"].as_array() {
         format!(
             "tree_root={}, continuations={}",
@@ -217,17 +221,28 @@ pub(crate) fn bounded_result(result: CallToolResult) -> CallToolResult {
 
 pub(crate) fn bounded_text(input: &str) -> String {
     const TEXT_LIMIT_BYTES: usize = 2048;
+    const ELLIPSIS: &str = "...";
     let mut output = String::with_capacity(input.len().min(TEXT_LIMIT_BYTES));
+    let mut truncated = false;
     for character in input.chars() {
         let character = if character.is_control() {
             '�'
         } else {
             character
         };
-        if output.len().saturating_add(character.len_utf8()) > TEXT_LIMIT_BYTES {
+        if output
+            .len()
+            .saturating_add(character.len_utf8())
+            .saturating_add(ELLIPSIS.len())
+            > TEXT_LIMIT_BYTES
+        {
+            truncated = true;
             break;
         }
         output.push(character);
+    }
+    if truncated {
+        output.push_str(ELLIPSIS);
     }
     output
 }
@@ -263,13 +278,35 @@ mod text_tests {
     }
 
     #[test]
+    fn direction_text_reports_continuations() {
+        let value = serde_json::json!({
+            "profile": {"alias": "sample"},
+            "truncated": true,
+            "truncation_reasons": [{"kind": "node_budget"}],
+            "scope_weight": 5,
+            "data": {
+                "frame": {"name": "anchor"},
+                "root": {"name": "anchor"},
+                "continuations": [{}, {}]
+            }
+        });
+        let text = text_fallback(&value);
+        assert!(
+            text.contains("frame=anchor, scope_weight=5, continuations=2"),
+            "{text}"
+        );
+        assert!(text.contains("truncated=true"), "{text}");
+        assert!(text.contains("reasons=[node_budget]"), "{text}");
+    }
+
+    #[test]
     fn bound_text_safely() {
         let long = format!("{}\u{0000}\u{0007}", "多字节🙂".repeat(1024));
         let text = bounded_text(&long);
         assert!(text.len() <= 2048);
         assert!(!text.chars().any(char::is_control));
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
-        assert!(text.ends_with('🙂') || text.ends_with('字') || text.ends_with('节'));
+        assert!(text.ends_with("..."));
 
         let failure = failure(ApiError::new(
             "invalid_test",

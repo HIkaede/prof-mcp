@@ -25,12 +25,18 @@ pub fn run(dry_run: bool) -> Result<()> {
     }
 
     if dry_run {
-        println!("would configure Codex MCP: {desired}");
+        say(format_args!("would configure Codex MCP: {desired}"));
         return Ok(());
     }
     ensure_codex_registration(&registration, &command)?;
-    println!("configured Codex MCP: {desired}");
+    say(format_args!("configured Codex MCP: {desired}"));
     Ok(())
+}
+
+/// Informational output only: a closed pipe must not panic the setup flow.
+fn say(line: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{line}");
 }
 
 fn preferred_command() -> Result<String> {
@@ -52,7 +58,10 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 }
 
 fn same_file(left: &Path, right: &Path) -> bool {
-    fs::canonicalize(left).ok() == fs::canonicalize(right).ok()
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -124,7 +133,7 @@ fn classify_registration(
     let transport = &current.transport;
     if current.enabled
         && transport.kind == "stdio"
-        && transport.command == command
+        && command_matches(&transport.command, command)
         && transport.args == ["serve"]
         && transport.env.is_none()
         && transport.env_vars.is_empty()
@@ -160,6 +169,13 @@ fn classify_registration(
         current.startup_timeout_sec.is_some(),
         current.tool_timeout_sec.is_some(),
     )))
+}
+
+/// Codex stores the command string it was given, and the same executable can be
+/// spelled differently (`/usr/bin/prof-mcp` vs `/usr/local/bin/prof-mcp`), so
+/// convergence compares resolved paths instead of bytes.
+fn command_matches(existing: &str, command: &str) -> bool {
+    existing == command || same_file(Path::new(existing), Path::new(command))
 }
 
 fn legacy_command_matches(existing: &str, command: &str) -> bool {
@@ -224,6 +240,54 @@ fn run_codex(args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_file_requires_both_paths_to_resolve() {
+        let directory = tempfile::tempdir().unwrap();
+        let existing = directory.path().join("prof-mcp");
+        fs::write(&existing, b"").unwrap();
+        assert!(same_file(&existing, &existing));
+        assert!(same_file(&existing, &directory.path().join("prof-mcp")));
+        assert!(!same_file(&existing, &directory.path().join("absent")));
+        assert!(!same_file(
+            &directory.path().join("absent"),
+            &directory.path().join("missing")
+        ));
+    }
+
+    #[test]
+    fn same_binary_under_another_spelling_is_desired() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("prof-mcp");
+        fs::write(&binary, b"").unwrap();
+        let spelled = directory.path().join(".").join("prof-mcp");
+        assert!(command_matches(
+            binary.to_str().unwrap(),
+            spelled.to_str().unwrap()
+        ));
+        assert!(!command_matches(
+            binary.to_str().unwrap(),
+            "/nonexistent/prof-mcp"
+        ));
+        let registered = CodexServer {
+            name: "prof-mcp".into(),
+            enabled: true,
+            transport: CodexTransport {
+                kind: "stdio".into(),
+                command: spelled.to_str().unwrap().into(),
+                args: vec!["serve".into()],
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+        };
+        assert!(matches!(
+            classify_registration(Some(registered), binary.to_str().unwrap()).unwrap(),
+            ExistingRegistration::Desired
+        ));
+    }
 
     #[test]
     fn reject_custom_registration() {

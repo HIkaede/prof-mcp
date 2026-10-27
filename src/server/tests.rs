@@ -6,6 +6,19 @@ use super::*;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 #[test]
+fn listed_tools_match_the_router() {
+    let mut routed: Vec<String> = ProfileServer::build_tool_router()
+        .list_all()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    routed.sort_unstable();
+    let mut listed: Vec<String> = TOOL_NAMES.iter().map(|name| (*name).to_owned()).collect();
+    listed.sort_unstable();
+    assert_eq!(listed, routed);
+}
+
+#[test]
 fn cold_query() {
     let workspace = tempfile::tempdir().unwrap();
     let source = workspace.path().join("input.folded");

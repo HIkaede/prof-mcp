@@ -99,7 +99,7 @@ pub(crate) fn validate_manifest(manifest: &Manifest) -> Result<(), ApiError> {
     for (alias, entry) in &manifest.profiles {
         if !valid_alias(alias)
             || !valid_fingerprint(&entry.fingerprint)
-            || !valid_source_name(&entry.source_name)
+            || !single_component(&entry.source_name)
         {
             return Err(corrupt(
                 "Registry contains an invalid profile entry",
@@ -111,6 +111,10 @@ pub(crate) fn validate_manifest(manifest: &Manifest) -> Result<(), ApiError> {
 }
 
 pub(crate) fn valid_source_name(name: &str) -> bool {
+    !name.chars().any(char::is_control) && single_component(name)
+}
+
+fn single_component(name: &str) -> bool {
     let mut components = Path::new(name).components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }

@@ -23,6 +23,16 @@ impl ResponseBudget {
         Self(MAX_RESPONSE_BYTES)
     }
 
+    pub(crate) fn request_remaining(&self) -> usize {
+        self.0
+    }
+
+    /// Undo charges made since `request_remaining` was read, so optional payload
+    /// can be dropped instead of failing the whole response.
+    pub(crate) fn restore(&mut self, remaining: usize) {
+        self.0 = remaining;
+    }
+
     pub(crate) fn charge(&mut self, bytes: usize) -> Result<(), ApiError> {
         self.0 = self.0.checked_sub(bytes).ok_or_else(response_too_large)?;
         Ok(())

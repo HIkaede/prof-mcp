@@ -11,7 +11,7 @@ use rmcp::{
     RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, tool::ToolCallContext},
     model::{
-        CacheScope, CallToolRequestParams, CallToolResponse, ListToolsResult,
+        CacheScope, CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
         PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
     },
     service::RequestContext,
@@ -29,6 +29,19 @@ use serde_json::json;
 use crate::cache::{LoadedProfile, ProfileCache};
 use crate::config::Config;
 use crate::error::ApiError;
+
+/// Tools clients see, in the order they are listed. `tests::listed_tools_match_the_router`
+/// keeps this in sync with the router the `#[tool_router]` macro builds.
+const TOOL_NAMES: [&str; 8] = [
+    "profile_summary",
+    "profile_find_symbols",
+    "profile_top",
+    "profile_tree",
+    "profile_callers",
+    "profile_callees",
+    "profile_paths",
+    "profile_diff",
+];
 
 #[derive(Clone)]
 pub struct ProfileServer {
@@ -112,6 +125,10 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 impl ServerHandler for ProfileServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                "prof-mcp",
+                env!("CARGO_PKG_VERSION"),
+            ))
             .with_instructions("Read-only folded profile queries. Omit profile for the active alias. Resume with continuations[i].continuation unchanged.")
     }
     async fn call_tool(
@@ -132,18 +149,8 @@ impl ServerHandler for ProfileServer {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        let names = [
-            "profile_summary",
-            "profile_find_symbols",
-            "profile_top",
-            "profile_tree",
-            "profile_callers",
-            "profile_callees",
-            "profile_paths",
-            "profile_diff",
-        ];
         let mut result = ListToolsResult::with_all_items(
-            names
+            TOOL_NAMES
                 .iter()
                 .filter_map(|name| self.tool_router.get(name).cloned())
                 .collect(),

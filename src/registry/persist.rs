@@ -2,6 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use super::errors::registry_io;
@@ -33,9 +34,18 @@ fn atomic_copy_with_sync(
             .unwrap_or("registry"),
         std::process::id()
     ));
+    // A crashed run can leave this deterministic name behind, and PID reuse must
+    // not make the destination permanently unwritable.
+    match fs::remove_file(&temp) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(registry_io(destination, error));
+        }
+        _ => {}
+    }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(&temp)
         .map_err(|error| registry_io(destination, error))?;
     let result = (|| -> std::io::Result<()> {
@@ -99,6 +109,20 @@ mod tests {
             }
             Ok(())
         })
+    }
+
+    #[test]
+    fn stale_temp_does_not_block_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("manifest.json");
+        // A crashed run leaves this exact name behind; PID reuse must not brick writes.
+        let temp = root
+            .path()
+            .join(format!(".manifest.json.{}.tmp", std::process::id()));
+        fs::write(&temp, b"partial").unwrap();
+        atomic_write_bytes(&destination, b"fresh").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"fresh");
+        assert!(!temp.exists());
     }
 
     #[test]

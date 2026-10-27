@@ -136,6 +136,56 @@ fn sparse_top_preserves_recursive_counts_and_weight_ties() {
 }
 
 #[test]
+fn summary_reports_ranking_truncation() {
+    let input: String = (0..7)
+        .map(|index| format!("root;f{index} {}\n", 10 + index))
+        .collect();
+    let profile = support::profile(&input);
+    let summary = support::json(query::summary(&profile).unwrap());
+    assert_eq!(summary["truncated"], true);
+    let reasons = summary["truncation_reasons"].as_array().unwrap();
+    assert_eq!(
+        reasons
+            .iter()
+            .filter(|reason| reason["kind"] == "row_limit")
+            .count(),
+        2
+    );
+    // root plus f0..f6: eight ranked frames, five returned.
+    assert_eq!(
+        reasons[0],
+        serde_json::json!({"kind":"row_limit","limit":5,"returned":5,"available":8,"omitted":3})
+    );
+    assert_eq!(summary["data"]["top_self"].as_array().unwrap().len(), 5);
+}
+
+#[test]
+fn summary_reports_recursion_truncation() {
+    let mut input = String::from("root 1\n");
+    for index in 0..6 {
+        input.push_str(&format!("r;f{index};f{index} 1\n"));
+    }
+    let profile = support::profile(&input);
+    let summary = support::json(query::summary(&profile).unwrap());
+    let reasons = summary["truncation_reasons"].as_array().unwrap();
+    let recursion = reasons
+        .iter()
+        .rfind(|reason| reason["kind"] == "row_limit")
+        .unwrap();
+    assert_eq!(
+        recursion,
+        &serde_json::json!({"kind":"row_limit","limit":5,"returned":5,"available":6,"omitted":1})
+    );
+    assert_eq!(
+        summary["data"]["recursion_detected"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+}
+
+#[test]
 fn summary_shape() {
     let profile = support::profile("root;foo;foo;foo;bar 10\nroot;a;b;c 5\n");
     let summary = support::json(query::summary(&profile).unwrap());

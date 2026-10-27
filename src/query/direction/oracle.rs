@@ -11,8 +11,11 @@ use serde_json::json;
 
 use crate::query::{
     ApiError, FrameId, FrameSelector, Profile, RenderState, TreeTruncation, check_budget, envelope,
-    frame_row, percent, resolve_selector, tree_reason_values,
+    frame_row_with_percent_weight, percent, resolve_selector, tree_reason_values,
 };
+
+/// Mirrors the server's accepted cursor width; see `direction.rs`.
+const MAX_CURSOR_IDS: usize = 4097;
 
 pub fn callers<'p>(
     profile: &'p Profile,
@@ -170,7 +173,19 @@ fn directional<'p>(
         truncation_reasons,
         Vec::new(),
         DirectionData {
-            frame: frame_row(profile, frame, &profile.frame_stats[frame as usize], scope),
+            // Every row in this response is scoped to the page, so the anchor row is
+            // too: inside the page its inclusive weight is the whole page weight.
+            frame: {
+                let mut row = frame_row_with_percent_weight(
+                    profile,
+                    frame,
+                    &profile.frame_stats[frame as usize],
+                    scope,
+                    scope,
+                );
+                row.inclusive_weight = scope;
+                row
+            },
             root: node,
             continuations_truncated: continuation_count > continuations.len(),
             continuation_limit: 128,
@@ -318,32 +333,42 @@ fn render_temp<'p>(
             omitted_count += 1;
             omitted_weight += child.total_weight;
             truncated = true;
-            if state.continuations.len() < state.continuation_limit {
-                state.bytes.row_name(profile.frame_name(id))?;
-                state.bytes.json(&state.frame_path)?;
-                state.bytes.json(&profile.source.fingerprint)?;
+            if state.continuations.len() < state.continuation_limit
+                && state.frame_path.len() + 2 <= MAX_CURSOR_IDS
+            {
+                let checkpoint = state.bytes.request_remaining();
+                let charged = state
+                    .bytes
+                    .row_name(profile.frame_name(id))
+                    .and_then(|()| state.bytes.json(&state.frame_path))
+                    .and_then(|()| state.bytes.json(&profile.source.fingerprint));
                 let mut cursor = Vec::with_capacity(state.frame_path.len() + 2);
                 cursor.push(anchor);
                 cursor.extend_from_slice(&state.frame_path);
                 cursor.push(id);
-                state.continuations.push(DirectionContinuation {
-                    frame_id: id,
-                    name: profile.frame_name(id),
-                    reason,
-                    continuation: Continuation {
-                        profile: String::new(),
-                        fingerprint: profile.source.fingerprint.clone(),
-                        tool: if callers {
-                            ContinuationTool::Callers
-                        } else {
-                            ContinuationTool::Callees
+                if charged.is_ok() {
+                    state.continuations.push(DirectionContinuation {
+                        frame_id: id,
+                        name: profile.frame_name(id),
+                        reason,
+                        continuation: Continuation {
+                            profile: String::new(),
+                            fingerprint: profile.source.fingerprint.clone(),
+                            tool: if callers {
+                                ContinuationTool::Callers
+                            } else {
+                                ContinuationTool::Callees
+                            },
+                            cursor,
                         },
-                        cursor,
-                    },
-                    total_weight: child.total_weight,
-                    profile_percent: percent(child.total_weight, profile.total_weight),
-                    scope_percent: percent(child.total_weight, state.scope),
-                });
+                        total_weight: child.total_weight,
+                        profile_percent: percent(child.total_weight, profile.total_weight),
+                        scope_percent: percent(child.total_weight, state.scope),
+                    });
+                } else {
+                    // Mirrors `direction.rs`: an unaffordable cursor is dropped, not fatal.
+                    state.bytes.restore(checkpoint);
+                }
             }
         } else {
             state.frame_path.push(id);

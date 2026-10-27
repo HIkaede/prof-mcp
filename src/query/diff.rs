@@ -62,6 +62,11 @@ pub fn diff<'p>(
         if regex.as_ref().is_some_and(|re| !re.is_match(name)) {
             continue;
         }
+        // A frame with no weight on either side carries no measurement: listing it
+        // as an unchanged row would only spend the limit on zeros.
+        if baseline_weight == 0 && candidate_weight == 0 {
+            continue;
+        }
         let baseline_percent = percent(baseline_weight, baseline.total_weight);
         let candidate_percent = percent(candidate_weight, candidate.total_weight);
         let row = Candidate {

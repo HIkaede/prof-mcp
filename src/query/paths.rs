@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::{
     ApiError, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES, Profile, TruncationReason, check_limit,
-    envelope, percent, resolve_selector, row_limit_reason,
+    envelope, percent, resolve_selector,
 };
 
 pub fn paths_with_window_budget<'p>(
@@ -23,7 +23,7 @@ pub fn paths_with_window_budget<'p>(
     let scope = profile.frame_stats[frame as usize].inclusive_weight;
     let available = stack_ids.len();
     let stacks = &stack_ids[..limit.min(stack_ids.len())];
-    let mut truncation_reasons = row_limit_reason(limit, available);
+    let mut truncation_reasons = Vec::new();
     let selected_paths = stacks.len();
     let mut window_cropped_paths = 0usize;
     let mut window_omitted_before = 0usize;
@@ -53,6 +53,7 @@ pub fn paths_with_window_budget<'p>(
             window_omitted_after += total_depth - requested_frame_end;
         }
         if budget_remaining == 0 {
+            budget_cropped_paths += 1;
             continue;
         }
         let (frame_start, frame_end) = if requested_frames <= budget_remaining {
@@ -111,6 +112,17 @@ pub fn paths_with_window_budget<'p>(
             omitted_after: total_depth - frame_end,
             budget_omitted_before: frame_start - requested_frame_start,
             budget_omitted_after: requested_frame_end - frame_end,
+        });
+    }
+    // `returned` counts rows that survive the total-frame budget, so the reason
+    // never claims more rows than `data.paths` holds. The reason itself is only
+    // about selection: budget omissions are reported by `total_frame_budget`.
+    if available > limit {
+        truncation_reasons.push(TruncationReason::RowLimit {
+            limit,
+            returned: rows.len(),
+            available,
+            omitted: available - rows.len(),
         });
     }
     if let Some(window) = window.filter(|_| window_cropped_paths > 0) {

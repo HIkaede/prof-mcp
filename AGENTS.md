@@ -4,104 +4,45 @@
 
 Do not create or modify documentation unless the user explicitly requests it.
 
-## Scope
+## Project positioning
 
-`prof-mcp` is a Rust 2024, MSRV 1.89, workspace-local MCP server for folded
-stack profiles, with a thin Linux CLI capture pipeline. Keep the implementation
-small and preserve the existing read-only query boundary.
+`prof-mcp` is a workspace-local MCP server for querying folded stack profiles.
+It operates on Linux. The implementation stays small and maintains a clear
+read-only query boundary.
 
-## Runtime contract
+## Architecture: Read-Only Query Boundary
 
-- `prof-mcp serve` is the MCP stdio entry point.
-- MCP queries discover the nearest ancestor `.prof-mcp/manifest.json` on every
-  query. A server restart must not be required after registration changes.
-- The server exposes exactly these tools, in this order:
-  `profile_summary`, `profile_find_symbols`, `profile_top`, `profile_tree`,
-  `profile_callers`, `profile_callees`, `profile_paths`, and `profile_diff`.
-- Single-profile tools use the active alias by default; diffs require explicit
-  baseline and candidate aliases.
-- Keep response schema version string `"2"` stable. Any truncation must report
-  structured `truncation_reasons`; bounded responses must remain deterministic.
-- Percentages, rankings, and diffs describe observed profile data. They are not
-  causal performance conclusions, and code must not invent missing DSO/source
-  metadata or treat overlapping context observations as a partition.
-- Protocol output stays on stdout; diagnostics and logs stay on stderr.
-- Tool results are capped at 64 KiB of compact JSON and manifests at 4 MiB.
-  Over-limit cases return structured `query_too_large` / `registry_too_large`
-  errors; never silently shorten exact frame names or statistics.
+MCP queries are read-only. Profile registration and lifecycle management
+(register, update, remove, gc) happen through the CLI, not through MCP.
 
-## Registry and safety invariants
+Each MCP query discovers the nearest ancestor `.prof-mcp/manifest.json`
+without requiring a server restart. This separates profile registration
+from query execution.
 
-- Workspace state lives under `.prof-mcp/`; generated profile blobs remain
-  ignored and the registry's small `.gitignore` remains visible.
-- Profile registration stores exact input bytes under their lowercase BLAKE3
-  fingerprint and updates aliases through the manifest. Preserve byte
-  deduplication, active-alias validity, and atomic persistence.
-- Validate profile size, manifest schema, aliases, fingerprints, source names,
-  and registry paths before use. Reject symlinks, non-regular files, and paths
-  that escape `.prof-mcp`.
-- Registry mutations (`register`, `use`, `remove`, and `gc`) are serialized by the
-  persistent advisory lock. Preserve recoverable lock contention. The lock
-  requires Unix file identity; claim only Unix/Linux support until non-Unix
-  conditional compilation and a CI build check exist.
-- `remove` deletes only a manifest alias. Removing the active alias requires an
-  existing replacement alias, and the last alias cannot be removed. Blob
-  deletion remains the responsibility of `gc`.
-- `gc` may remove only unreferenced, regular, fingerprint-named profile blobs;
-  it must not rewrite the manifest or active alias. Keep `--dry-run`
-  deterministic.
-- Business query failures set `isError=true`, carry complete `ApiError` JSON in
-  text `content`, and omit `structuredContent`. Do not turn malformed or
-  untrusted profile/registry input into a panic or an arbitrary filesystem
-  operation.
+The read-only boundary is non-negotiable. If a requirement cannot be
+accommodated within this constraint, reject the requirement rather than
+expanding the boundary.
 
-## Integration side effects
+## Scope: Query, Not Analysis
 
-- Direct invocation with no arguments prints help without persistent side effects.
-  Registration requires the explicit `register` subcommand.
-- `capture` is Linux-only and must pass the target command directly to system
-  `perf`; it must not invoke a shell. It parses `perf script` output in Rust,
-  then reuses `registry::register`, preserving size, parser, alias, and
-  atomic-write checks.
-- `setup` only updates the Codex MCP registration. It must be idempotent,
-  support `--dry-run`, refuse conflicting custom registrations, and avoid a
-  partial successful setup.
-- Agent guidance is documentation, not a runtime source of truth. Setup must
-  preserve global agent instructions.
+Tools expose measurements: symbol locations, frequency rankings, call chains,
+and comparisons. Profile data describes observed execution, not causal
+performance conclusions. Code must not invent missing metadata or treat
+overlapping observations as a partition.
 
-## Code ownership
+The server does not offer analysis, recommendations, or performance judgments.
+It surfaces what the profiler measured.
 
-- `src/profile/`: folded-input parsing, model construction, and limits.
-- `src/registry/`: workspace discovery, manifest validation, locking, and
-  atomic persistence.
-- `src/capture.rs`: direct Linux perf/folding orchestration only; no profile
-  parsing or alternate registry writes.
-- `src/query/`: deterministic profile analysis and bounded query semantics.
-- `src/server/`: MCP routing, input/output schemas, and response shaping.
-- `src/setup.rs`: Codex integration and its rollback/idempotency behavior.
+## Complexity gate
 
-Keep changes in the narrowest responsible module. Update tests when a
-user-visible CLI, MCP tool, schema, limit, or persistence rule changes. Avoid
-new dependencies or abstractions unless the current modules cannot express
-the required behavior clearly.
+Before introducing a new dependency, abstraction, or module, justify why
+existing code cannot express the behavior clearly.
 
-## Required validation
+If a requirement conflicts with the read-only boundary, decline it.
 
-Run from the repository root. `.github/workflows/ci.yml` is authoritative if
-it differs from this list:
+## Engineering practices
 
-```bash
-cargo fmt --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
-cargo test --locked --release --test stdio
-python3 eval/test_query.py
-python3 eval/score.py --self-check
-cargo +1.89.0 test --locked --all-targets --all-features
-```
+User-visible behavior changes—CLI interface, MCP tool set, response format,
+limits—must include corresponding test coverage. See `.github/workflows/ci.yml`
+for the validation baseline.
 
-CI also runs a short fuzz smoke (see the `fuzz` job); run it when changing
-folded parsing or capture collapse. Changes to MCP responses, registry safety,
-setup, or filesystem behavior require focused tests in addition to the full
-suite. Capture changes require a deterministic fake-perf pipeline test and,
-when available, a real Linux perf smoke test.

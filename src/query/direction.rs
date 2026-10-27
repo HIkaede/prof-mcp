@@ -11,8 +11,12 @@ use serde_json::json;
 
 use super::{
     ApiError, FrameId, FrameSelector, Profile, RenderState, TreeTruncation, check_budget, envelope,
-    frame_row, percent, resolve_selector, tree_reason_values,
+    frame_row_with_percent_weight, percent, resolve_selector, tree_reason_values,
 };
+
+/// Cursor ids the server accepts: `[anchor] + path + [child]`. Longer paths
+/// cannot produce a resumable cursor, so they are reported as omitted instead.
+const MAX_CURSOR_IDS: usize = 4097;
 
 pub fn callers<'p>(
     profile: &'p Profile,
@@ -201,7 +205,19 @@ fn directional<'p>(
         truncation_reasons,
         Vec::new(),
         DirectionData {
-            frame: frame_row(profile, frame, &profile.frame_stats[frame as usize], scope),
+            // Every row in this response is scoped to the page, so the anchor row is
+            // too: inside the page its inclusive weight is the whole page weight.
+            frame: {
+                let mut row = frame_row_with_percent_weight(
+                    profile,
+                    frame,
+                    &profile.frame_stats[frame as usize],
+                    scope,
+                    scope,
+                );
+                row.inclusive_weight = scope;
+                row
+            },
             root: node,
             continuations_truncated: continuation_count > continuations.len(),
             continuation_limit: 128,
@@ -416,32 +432,43 @@ impl<'p> Walk<'p> {
     ) -> Result<(), ApiError> {
         state.note_truncation(reason, child.weight);
         *state.continuation_count += 1;
-        if state.continuations.len() < state.continuation_limit {
-            state.bytes.row_name(self.profile.frame_name(child.frame))?;
-            state.bytes.json(&state.frame_path)?;
-            state.bytes.json(&self.profile.source.fingerprint)?;
+        if state.continuations.len() < state.continuation_limit
+            && state.frame_path.len() + 2 <= MAX_CURSOR_IDS
+        {
+            let checkpoint = state.bytes.request_remaining();
+            let charged = state
+                .bytes
+                .row_name(self.profile.frame_name(child.frame))
+                .and_then(|()| state.bytes.json(&state.frame_path))
+                .and_then(|()| state.bytes.json(&self.profile.source.fingerprint));
             let mut cursor = Vec::with_capacity(state.frame_path.len() + 2);
             cursor.push(self.anchor);
             cursor.extend_from_slice(&state.frame_path);
             cursor.push(child.frame);
-            state.continuations.push(DirectionContinuation {
-                frame_id: child.frame,
-                name: self.profile.frame_name(child.frame),
-                reason,
-                continuation: Continuation {
-                    profile: String::new(),
-                    fingerprint: self.profile.source.fingerprint.clone(),
-                    tool: if self.callers {
-                        ContinuationTool::Callers
-                    } else {
-                        ContinuationTool::Callees
+            if charged.is_ok() {
+                state.continuations.push(DirectionContinuation {
+                    frame_id: child.frame,
+                    name: self.profile.frame_name(child.frame),
+                    reason,
+                    continuation: Continuation {
+                        profile: String::new(),
+                        fingerprint: self.profile.source.fingerprint.clone(),
+                        tool: if self.callers {
+                            ContinuationTool::Callers
+                        } else {
+                            ContinuationTool::Callees
+                        },
+                        cursor,
                     },
-                    cursor,
-                },
-                total_weight: child.weight,
-                profile_percent: percent(child.weight, self.profile.total_weight),
-                scope_percent: percent(child.weight, state.scope),
-            });
+                    total_weight: child.weight,
+                    profile_percent: percent(child.weight, self.profile.total_weight),
+                    scope_percent: percent(child.weight, state.scope),
+                });
+            } else {
+                // A deep cursor can cost more than the response allows; drop it and
+                // report `continuations_truncated` instead of failing the query.
+                state.bytes.restore(checkpoint);
+            }
         }
         Ok(())
     }

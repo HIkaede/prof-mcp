@@ -243,7 +243,8 @@ fn path_frame_budget() {
             "selected_paths":2,
             "returned_paths":1,
             "omitted_paths":1,
-            "cropped_paths":1,
+            // The dropped path counts as cropped too: all of its frames were omitted.
+            "cropped_paths":2,
         })
     );
     assert_eq!(
@@ -268,7 +269,8 @@ fn path_frame_budget() {
             "selected_paths":2,
             "returned_paths":1,
             "omitted_paths":1,
-            "cropped_paths":0,
+            // The second path is dropped once the budget is spent, so it is cropped.
+            "cropped_paths":1,
         })
     );
     assert_eq!(
@@ -510,9 +512,9 @@ fn mixed_path_truncations_keep_flat_fields_and_reason_order() {
     assert_eq!(
         paths["truncation_reasons"],
         serde_json::json!([
-            {"kind":"row_limit","limit":2,"returned":2,"available":3,"omitted":1},
+            {"kind":"row_limit","limit":2,"returned":1,"available":3,"omitted":2},
             {"kind":"frame_window","mode":"head","cropped_paths":2,"total_omitted_before":0,"total_omitted_after":2},
-            {"kind":"total_frame_budget","limit":1,"available":4,"returned":1,"omitted":3,"selected_paths":2,"returned_paths":1,"omitted_paths":1,"cropped_paths":1}
+            {"kind":"total_frame_budget","limit":1,"available":4,"returned":1,"omitted":3,"selected_paths":2,"returned_paths":1,"omitted_paths":1,"cropped_paths":2}
         ])
     );
 }

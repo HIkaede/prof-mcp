@@ -29,6 +29,15 @@ pub fn run(
 
     #[cfg(target_os = "linux")]
     {
+        // Name the folded file after the alias so unnamed captures of distinct
+        // commands do not collide on a single "capture" alias.
+        let alias = name.map_or_else(
+            || registry::default_alias(std::path::Path::new(&command[0])),
+            ToOwned::to_owned,
+        );
+        if !registry::valid_alias(&alias) {
+            bail!("--name must be 1-64 bytes of ASCII letters, digits, '.', '_' or '-'");
+        }
         let temporary = tempfile::tempdir().context("could not create capture directory")?;
         let perf_data = temporary.path().join("perf.data");
         let status = Command::new("perf")
@@ -44,7 +53,8 @@ pub fn run(
             bail!("perf record failed: {status}");
         }
 
-        let folded = temporary.path().join("capture.folded");
+        // The alias is validated up front, so this join cannot escape the temp dir.
+        let folded = temporary.path().join(format!("{alias}.folded"));
         let file = File::create(&folded).context("could not store folded capture")?;
         let mut script = PerfScript(
             Command::new("perf")
@@ -323,11 +333,12 @@ fn is_pid_field(field: &str) -> bool {
 }
 
 // Percent escaping keeps folded separators unambiguous without conflating
-// a literal colon or percent sequence with the original symbol identity.
+// a literal percent sequence with the original symbol identity. Brackets stay
+// literal so kernel and module names read as perf printed them.
 fn encode_frame(frame: &str) -> String {
     let extra = frame
         .bytes()
-        .filter(|byte| matches!(byte, b'%' | b';' | b'[' | b']'))
+        .filter(|byte| matches!(byte, b'%' | b';'))
         .count()
         .saturating_mul(2);
     let mut encoded = String::with_capacity(frame.len().saturating_add(extra));
@@ -335,8 +346,6 @@ fn encode_frame(frame: &str) -> String {
         match ch {
             '%' => encoded.push_str("%25"),
             ';' => encoded.push_str("%3B"),
-            '[' => encoded.push_str("%5B"),
-            ']' => encoded.push_str("%5D"),
             ch => encoded.push(ch),
         }
     }
@@ -407,7 +416,8 @@ fn parse_stack_line(line: &str) -> Option<String> {
     if function.is_empty() || module.is_empty() {
         return None;
     }
-    // Literal brackets are escaped, so this reserved marker cannot be a symbol name.
+    // A symbol spelled exactly like this marker would merge with it; in practice
+    // only the synthesized marker has this shape.
     let function = if function == "[unknown]" {
         format!("[unknown@0x{pc}]")
     } else {

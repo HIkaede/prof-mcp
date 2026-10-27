@@ -64,7 +64,8 @@ fn diff_by_exact_name() {
         .unwrap(),
     );
     assert_eq!(limited["truncation_reasons"][0]["kind"], "row_limit");
-    assert_eq!(limited["truncation_reasons"][0]["available"], 4);
+    // `root` has zero self weight on both sides, so it is not a diff row.
+    assert_eq!(limited["truncation_reasons"][0]["available"], 3);
 }
 
 #[test]
@@ -139,6 +140,8 @@ fn bounded_diff_keeps_order() {
                 let expected: Vec<_> = names
                     .into_iter()
                     .filter(|name| regex.is_none() || *name != "root")
+                    // Zero self weight on both sides is not a diff row.
+                    .filter(|name| metric != TopSort::SelfWeight || *name != "root")
                     .collect();
                 for limit in 1..=5 {
                     let result = support::json(
@@ -161,7 +164,7 @@ fn bounded_diff_keeps_order() {
                             "gamma" => (70, 0),
                             "delta" => (0, 70),
                             "root" => match metric {
-                                TopSort::SelfWeight => (0, 0),
+                                TopSort::SelfWeight => unreachable!("zero rows are filtered"),
                                 TopSort::Inclusive => (100, 100),
                             },
                             _ => unreachable!(),

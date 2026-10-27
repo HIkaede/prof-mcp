@@ -42,6 +42,8 @@ pub struct Registration {
     pub alias: String,
     pub fingerprint: String,
     pub byte_len: u64,
+    /// The alias already pointed at a different profile, which this registration replaced.
+    pub replaced: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -178,7 +180,7 @@ pub fn register_reader(
     let source_name = source_name.to_owned();
 
     let state = workspace.join(REGISTRY_DIR);
-    ensure_registry_layout(&state)?;
+    ensure_registry_layout(&state, true)?;
     let _lock = RegistrationLock::acquire(&state)?;
     let file = profile_file(&fingerprint);
     let mut manifest = match read_manifest_optional(&state)? {
@@ -192,6 +194,10 @@ pub fn register_reader(
             profiles: BTreeMap::new(),
         },
     };
+    let replaced = manifest
+        .profiles
+        .get(&alias)
+        .is_some_and(|profile| profile.fingerprint != fingerprint);
     manifest.active = alias.clone();
     manifest.profiles.insert(
         alias.clone(),
@@ -242,6 +248,7 @@ pub fn register_reader(
         alias,
         fingerprint,
         byte_len,
+        replaced,
     })
 }
 
@@ -380,22 +387,18 @@ pub fn set_active(workspace: &Path, alias: &str) -> Result<RegistryStatus, ApiEr
             "Run prof-mcp register PATH from workspace root.",
         )
     })?;
-    ensure_registry_layout(&state)?;
+    ensure_registry_layout(&state, false)?;
     let _lock = RegistrationLock::acquire(&state)?;
     let mut manifest = read_manifest_required(&state)?;
     validate_manifest(&manifest)?;
-    if !manifest.profiles.contains_key(alias) {
-        return Err(ApiError::new(
-            "profile_alias_not_found",
-            format!("No registered profile alias: {alias}"),
-            alias_details(&manifest, alias),
-            "Run prof-mcp list and select an existing alias.",
-        ));
-    }
+    resolve_manifest(&state, &manifest, Some(alias))?;
     manifest.active = alias.to_owned();
     atomic_write_json(&state.join(MANIFEST), &manifest)?;
+    // Report the state that was just committed, still under the same lock.
+    let committed = status_manifest(state.clone(), manifest);
     drop(_lock);
-    status(workspace)
+    drop(state);
+    Ok(committed)
 }
 
 pub fn remove(
@@ -414,7 +417,7 @@ pub fn remove(
             "Run prof-mcp register PATH from workspace root.",
         )
     })?;
-    ensure_registry_layout(&state)?;
+    ensure_registry_layout(&state, false)?;
     let _lock = RegistrationLock::acquire(&state)?;
     let mut manifest = read_manifest_required(&state)?;
     validate_manifest(&manifest)?;
@@ -496,7 +499,7 @@ pub fn gc(workspace: &Path, dry_run: bool) -> Result<GcReport, ApiError> {
             "Run prof-mcp register PATH from workspace root.",
         )
     })?;
-    ensure_registry_layout(&state)?;
+    ensure_registry_layout(&state, false)?;
     let _lock = RegistrationLock::acquire(&state)?;
     let manifest = read_manifest_required(&state)?;
     validate_manifest(&manifest)?;

@@ -174,6 +174,48 @@ fn shared_chain_full_match_continuations_keep_exact_scopes() {
 }
 
 #[test]
+fn deep_cursor_path_never_emits_unresumable_cursor() {
+    // A 4096-id path is accepted on resume, but growing it into a cursor would
+    // produce 4098 ids, which the server rejects, so no cursor may be emitted.
+    let names = vec!["r"; 4096].join(";");
+    for (input, callers) in [
+        (format!("up2;up;{names};focus 7\n"), true),
+        (format!("focus;{names};down;down2 7\n"), false),
+    ] {
+        let p = ProfileBuilder::new(BuildLimits {
+            max_depth: 4099,
+            ..BuildLimits::default()
+        })
+        .from_reader(Cursor::new(input), PathBuf::from("deep.folded"))
+        .unwrap();
+        let selector = FrameSelector {
+            frame_name: Some("focus".into()),
+            frame_id: None,
+        };
+        let path = vec![p.frame_id("r").unwrap(); 4096];
+        let cursor = Some((path.as_slice(), p.fingerprint()));
+        let output = if callers {
+            super::callers(&p, &selector, 1, 1, 0.0, cursor)
+        } else {
+            super::callees(&p, &selector, 1, 1, 0.0, cursor)
+        }
+        .unwrap();
+        assert!(output.data.continuations.is_empty());
+        assert!(output.data.continuations_truncated);
+        let reference = if callers {
+            oracle::callers(&p, &selector, 1, 1, 0.0, cursor)
+        } else {
+            oracle::callees(&p, &selector, 1, 1, 0.0, cursor)
+        }
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(output).unwrap(),
+            serde_json::to_value(reference).unwrap()
+        );
+    }
+}
+
+#[test]
 fn direction_accepts_maximum_cursor_and_rejects_terminal_unknown_path() {
     let names = vec!["r"; 4096].join(";");
     for (input, callers) in [
@@ -181,7 +223,7 @@ fn direction_accepts_maximum_cursor_and_rejects_terminal_unknown_path() {
         (format!("focus;{names} 7\n"), false),
     ] {
         let p = ProfileBuilder::new(BuildLimits {
-            max_depth: 4097,
+            max_depth: 4099,
             ..BuildLimits::default()
         })
         .from_reader(Cursor::new(input), PathBuf::from("deep.folded"))

@@ -49,19 +49,21 @@ exit 2
     }
 
     fn run(&self, mode: &str, command: &[&str]) -> Output {
+        self.run_with(Some("candidate"), mode, command)
+    }
+
+    fn run_with(&self, name: Option<&str>, mode: &str, command: &[&str]) -> Output {
         let stdout = self.root.path().join("stdout");
         let stderr = self.root.path().join("stderr");
+        let mut args = vec!["--max-file-size-mib", "1", "capture"];
+        if let Some(name) = name {
+            args.extend(["--name", name]);
+        }
+        args.push("--");
+        args.extend_from_slice(command);
         let mut child = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
             .current_dir(self.root.path())
-            .args([
-                "--max-file-size-mib",
-                "1",
-                "capture",
-                "--name",
-                "candidate",
-                "--",
-            ])
-            .args(command)
+            .args(args)
             .env("PATH", self.root.path().join("bin"))
             .env("FAKE_ROOT", self.root.path())
             .env("FAKE_MODE", mode)
@@ -154,7 +156,7 @@ fn capture_identity() {
     let profile = registry::resolve(capture.root.path(), Some("candidate")).unwrap();
     assert_eq!(
         fs::read_to_string(profile.path).unwrap(),
-        "a  b;foo [/tmp/dir (%5Bnested%5D)/lib.so] 3\na  b;foo [/tmp/dir (/nested)/lib.so] 1\na b;foo [/tmp/dir (/nested)/lib.so] 2\n"
+        "a  b;foo [/tmp/dir (/nested)/lib.so] 1\na  b;foo [/tmp/dir ([nested])/lib.so] 3\na b;foo [/tmp/dir (/nested)/lib.so] 2\n"
     );
 }
 
@@ -228,4 +230,43 @@ fn reap_perf_on_parse_error() {
         "perf must be reaped"
     );
     assert!(!capture.root.path().join(".prof-mcp").exists());
+}
+
+#[test]
+fn unnamed_capture_rejects_escaping_name() {
+    let capture = Capture::new(VALID);
+    let output = capture.run_with(Some("../escape"), "success", &["/bin/true"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--name"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !capture
+            .root
+            .path()
+            .parent()
+            .unwrap()
+            .join("escape.folded")
+            .exists()
+    );
+    assert!(registry::resolve(capture.root.path(), None).is_err());
+}
+
+#[test]
+fn unnamed_capture_derives_alias_from_command() {
+    let capture = Capture::new(VALID);
+    let output = capture.run_with(None, "success", &["/bin/true"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile = registry::resolve(capture.root.path(), None).unwrap();
+    assert_eq!(profile.alias, "true");
+    assert_eq!(
+        fs::read_to_string(&profile.path).unwrap(),
+        "worker;overload(double) [/tmp/a] 3\nworker;overload(int) [/tmp/a] 2\n"
+    );
 }

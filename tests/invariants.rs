@@ -344,7 +344,18 @@ fn equivalent_folded_inputs() {
                                 .unwrap(),
                             );
                             let rows = diff["data"]["rows"].as_array().unwrap();
-                            assert_eq!(rows.len(), candidate.frames().len());
+                            // A frame with zero weight on both sides is not a diff row.
+                            let weighted = (0..candidate.frames().len())
+                                .filter(|&id| match metric {
+                                    TopSort::SelfWeight => {
+                                        candidate.frame_stats()[id].self_weight > 0
+                                    }
+                                    TopSort::Inclusive => {
+                                        candidate.frame_stats()[id].inclusive_weight > 0
+                                    }
+                                })
+                                .count();
+                            assert_eq!(rows.len(), weighted);
                             for row in rows {
                                 assert_eq!(row["delta_pp"], 0.0);
                                 assert_eq!(row["baseline_weight"], row["candidate_weight"]);

@@ -31,7 +31,7 @@ fn frame_selector_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema 
             {
                 "type":"object",
                 "additionalProperties":false,
-                "properties":{"frame_id":{"type":"integer","minimum":0}},
+                "properties":{"frame_id":{"type":"integer","minimum":0,"maximum":4294967295u32}},
                 "required":["frame_id"]
             },
             {

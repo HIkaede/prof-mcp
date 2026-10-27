@@ -147,6 +147,51 @@ fn resume_caller_continuations() {
 }
 
 #[test]
+fn continuation_frames_report_scope_local_percents() {
+    let profile = support::profile("r1;anchor 5\nr2;anchor 5\nother 5\n");
+    let selector = FrameSelector {
+        frame_id: Some(support::frame(&profile, "anchor")),
+        frame_name: None,
+    };
+    let shallow = support::json(query::callers(&profile, &selector, 1, 1, 0.0, None).unwrap());
+    let continuations = shallow["data"]["continuations"].as_array().unwrap();
+    let first = &continuations[0];
+    assert_eq!(first["total_weight"], 5);
+    let fingerprint = first["continuation"]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let node_path: Vec<u32> = first["continuation"]["cursor"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|value| value.as_u64().unwrap() as u32)
+        .collect();
+    let resumed = support::json(
+        query::callers(
+            &profile,
+            &selector,
+            1,
+            1,
+            0.0,
+            Some((node_path.as_slice(), &fingerprint)),
+        )
+        .unwrap(),
+    );
+    let frame = &resumed["data"]["frame"];
+    assert_eq!(frame["name"], "anchor");
+    assert_eq!(resumed["scope_weight"], 5);
+    // The anchor row is scoped to the page, so its inclusive weight is the page weight.
+    assert_eq!(frame["inclusive_weight"], 5);
+    assert_eq!(frame["scope_percent"], 100.0);
+    assert_eq!(
+        frame["profile_percent"].as_f64().unwrap().round(),
+        (100.0_f64 / 3.0).round()
+    );
+}
+
+#[test]
 fn reject_invalid_continuations() {
     let profile = support::profile("root;mid;anchor 10\n");
     let anchor = support::frame(&profile, "anchor");
@@ -256,7 +301,7 @@ fn deep_continuation() {
 }
 
 #[test]
-fn deep_continuation_construction_has_a_byte_budget() {
+fn deep_continuation_cursors_never_exceed_the_response_budget() {
     let prefix = vec!["recursive"; 2048].join(";");
     let input: String = (0..128)
         .map(|i| format!("root;{prefix};leaf{i} 1\n"))
@@ -267,17 +312,32 @@ fn deep_continuation_construction_has_a_byte_budget() {
         frame_name: None,
     };
     let cursor = vec![support::frame(&profile, "recursive"); 2048];
-    let error = query::callees(
-        &profile,
-        &selector,
-        0,
-        1,
-        0.0,
-        Some((&cursor, profile.fingerprint())),
-    )
-    .unwrap_err();
-    assert_eq!(error.code, "query_too_large");
-    assert_eq!(error.details["resource"], "response_bytes");
+    let bounded = support::json(
+        query::callees(
+            &profile,
+            &selector,
+            0,
+            1,
+            0.0,
+            Some((&cursor, profile.fingerprint())),
+        )
+        .unwrap(),
+    );
+    // Cursors this deep cost more than the response allows: they are dropped and
+    // reported, not returned as a hard query_too_large for the whole page.
+    let continuations = bounded["data"]["continuations"].as_array().unwrap();
+    assert!(continuations.len() < 128);
+    assert_eq!(bounded["data"]["continuations_truncated"], true);
+    for continuation in continuations {
+        assert!(
+            continuation["continuation"]["cursor"]
+                .as_array()
+                .unwrap()
+                .len()
+                <= 4097
+        );
+    }
+    assert!(serde_json::to_vec(&bounded).unwrap().len() <= 64 * 1024);
     // Rendering these leaves needs no repeated deep cursors and still fits.
     let page = support::json(
         query::callees(

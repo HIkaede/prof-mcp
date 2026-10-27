@@ -5,14 +5,19 @@ use crate::output::{
     RecursionRow, RegistryOutput, ResponseBudget, StackConcentration, SummaryData, SummaryOutput,
 };
 
-use super::{Profile, envelope, frame_row, frame_row_with_percent_weight, percent};
+use super::{
+    Profile, TruncationReason, envelope, frame_row, frame_row_with_percent_weight, percent,
+};
+
+/// Rows returned per summary ranking; extra rows are reported as truncated.
+const SUMMARY_ROWS: usize = 5;
 
 pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> {
     let mut bytes = ResponseBudget::new();
     let top_self: Vec<_> = profile
         .top_self
         .iter()
-        .take(5)
+        .take(SUMMARY_ROWS)
         .map(|id| {
             bytes.row_name(profile.frame_name(*id))?;
             Ok(frame_row_with_percent_weight(
@@ -27,7 +32,7 @@ pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> 
     let top_inclusive: Vec<_> = profile
         .top_inclusive
         .iter()
-        .take(5)
+        .take(SUMMARY_ROWS)
         .map(|id| {
             bytes.row_name(profile.frame_name(*id))?;
             Ok(frame_row(
@@ -40,6 +45,21 @@ pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> 
         .collect::<Result<_, ApiError>>()?;
     let stack_concentration = stack_concentration(profile);
     let recursion = recursion_report(profile, &mut bytes)?;
+    let mut truncation_reasons = Vec::new();
+    for (available, returned) in [
+        (profile.top_self.len(), top_self.len()),
+        (profile.top_inclusive.len(), top_inclusive.len()),
+        (profile.recursive_frames.len(), recursion.len()),
+    ] {
+        if available > returned {
+            truncation_reasons.push(TruncationReason::RowLimit {
+                limit: SUMMARY_ROWS,
+                returned,
+                available,
+                omitted: available - returned,
+            });
+        }
+    }
     let mut warnings = vec!["Weight unit is opaque; it is not assumed to be time or cycles."];
     if !recursion.is_empty() {
         warnings.push(
@@ -49,7 +69,7 @@ pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> 
     Ok(envelope(
         profile,
         profile.total_weight,
-        Vec::new(),
+        truncation_reasons,
         warnings,
         SummaryData {
             total_weight: profile.total_weight,
@@ -87,6 +107,7 @@ fn recursion_report<'p>(
     profile
         .recursive_frames
         .iter()
+        .take(SUMMARY_ROWS)
         .map(|row| {
             bytes.row_name(profile.frame_name(row.frame))?;
             Ok(RecursionRow {

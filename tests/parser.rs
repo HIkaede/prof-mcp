@@ -324,7 +324,6 @@ fn prefix_event_recursion_matches_stack_oracle() {
     }
     let mut expected = expected.into_iter().collect::<Vec<_>>();
     expected.sort_unstable_by_key(|&(frame, (weight, _))| (std::cmp::Reverse(weight), frame));
-    expected.truncate(5);
     let actual = profile
         .recursive_frames()
         .iter()
