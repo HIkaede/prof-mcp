@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::{
     ApiError, FrameSelector, FrameWindow, MAX_TOTAL_FRAMES, Profile, TruncationReason, check_limit,
-    envelope, percent, resolve_selector,
+    display_percent, envelope, resolve_selector,
 };
 
 pub fn paths_with_window_budget<'p>(
@@ -91,8 +91,7 @@ pub fn paths_with_window_budget<'p>(
         rows.push(PathRow {
             frames,
             weight: stack.weight,
-            profile_percent: percent(stack.weight, profile.total_weight),
-            scope_percent: percent(stack.weight, scope),
+            profile_percent: display_percent(stack.weight, profile.total_weight),
             target_positions: positions,
             display_target_positions,
             total_depth,

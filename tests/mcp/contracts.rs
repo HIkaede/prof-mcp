@@ -29,85 +29,9 @@ async fn tool_order_and_cache_metadata() {
 async fn tool_schemas() {
     sample(async |client| {
         let tools = client.list_tools(None).await.unwrap();
-        assert!(tools.tools.iter().all(|tool| {
-            tool.output_schema
-                .as_ref()
-                .and_then(|schema| schema.get("type"))
-                .and_then(|value| value.as_str())
-                == Some("object")
-        }));
-        for tool in &tools.tools {
-            let schema = tool.output_schema.as_ref().unwrap();
-            assert!(
-                schema["properties"].get("next_steps").is_none(),
-                "{}",
-                tool.name
-            );
-        }
-        for tool in &tools.tools {
-            let schema = tool.output_schema.as_ref().unwrap();
-            assert!(schema.get("anyOf").is_none());
-            for field in ["code", "message", "details", "retry_hint"] {
-                assert!(schema["properties"].get(field).is_none());
-            }
-            assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("schema_version")));
-        }
-        let summary_schema = tools.tools[0].output_schema.as_ref().unwrap();
-        assert!(
-            summary_schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("profile"))
-        );
-        assert!(summary_schema["properties"]["data"].is_object());
-        assert_eq!(
-            summary_schema["properties"]["schema_version"]["type"],
-            "string"
-        );
-        assert_eq!(summary_schema["properties"]["schema_version"]["const"], "2");
-        assert!(
-            summary_schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("truncation_reasons"))
-        );
-        for tool_index in [2, 3, 4, 5, 6, 7] {
-            let schema = tools.tools[tool_index].output_schema.as_ref().unwrap();
-            assert_ne!(
-                schema["properties"]["data"],
-                serde_json::json!({"type":"object"})
-            );
-            assert!(schema["properties"]["data"].get("$ref").is_some());
-        }
-        for (index, definition, fields) in [
-            (0, "SummaryData", vec!["total_weight", "frame_count", "unique_stack_count", "max_depth", "stack_concentration", "recursion_detected", "top_self", "top_inclusive", "registry"]),
-            (1, "FindData", vec!["query", "mode", "matches"]),
-        ] {
-            let schema = tools.tools[index].output_schema.as_ref().unwrap();
-            assert_eq!(schema["properties"]["data"]["$ref"], format!("#/$defs/{definition}"));
-            let data = &schema["$defs"][definition];
-            for field in fields {
-                assert!(data["properties"].get(field).is_some(), "{definition}.{field}");
-                assert!(data["required"].as_array().unwrap().contains(&serde_json::json!(field)));
-            }
-        }
-        for (index, data, field, definition, values) in [
-            (1, "FindData", "mode", "MatchMode", serde_json::json!(["contains", "regex"])),
-            (2, "TopData", "metric", "TopSort", serde_json::json!(["self", "inclusive"])),
-            (7, "DiffData", "metric", "TopSort", serde_json::json!(["self", "inclusive"])),
-            (7, "DiffData", "sort", "DiffSort", serde_json::json!(["regression", "improvement", "absolute"])),
-        ] {
-            let schema = tools.tools[index].output_schema.as_ref().unwrap();
-            assert_eq!(schema["$defs"][data]["properties"][field]["$ref"], format!("#/$defs/{definition}"));
-            assert_eq!(schema["$defs"][definition]["enum"], values);
-        }
-        let registry = &summary_schema["$defs"]["RegistryOutput"]["properties"];
-        for field in ["registry_root", "active", "profile_count", "profiles"] {
-            assert!(registry.get(field).is_some());
-        }
-        assert_eq!(summary_schema["$defs"]["RegistryProfile"]["properties"]["fingerprint"]["type"], "string");
-        let matches = &tools.tools[1].output_schema.as_ref().unwrap()["$defs"]["FindData"]["properties"]["matches"];
-        assert_eq!(matches["items"]["$ref"], "#/$defs/FrameRow");
+        // Responses are shaped by `respond::success`; advertised output schemas
+        // only cost the caller context.
+        assert!(tools.tools.iter().all(|tool| tool.output_schema.is_none()));
         let find_schema = &tools.tools[1].input_schema;
         for index in [1, 2] {
             assert!(
@@ -116,12 +40,6 @@ async fn tool_schemas() {
                     .is_none()
             );
         }
-        let top_schema = tools.tools[2].output_schema.as_ref().unwrap();
-        assert!(
-            top_schema["$defs"]["TopData"]["properties"]
-                .get("grouped_rows")
-                .is_none()
-        );
         assert_eq!(find_schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(find_schema["properties"]["limit"]["maximum"], 100);
         assert!(
@@ -181,20 +99,6 @@ async fn tool_schemas() {
             assert!(input["properties"].get("root_node_id").is_none());
             assert!(input["properties"].get("profile_fingerprint").is_none());
             assert_eq!(input["properties"]["max_depth"]["default"], 4);
-            let output = tools.tools[index].output_schema.as_ref().unwrap();
-            assert_eq!(output["$defs"]["Continuation"], *continuation);
-            for definition in output["$defs"].as_object().unwrap().values() {
-                if definition["properties"].get("reason").is_some() {
-                    let properties = &definition["properties"];
-                    assert!(
-                        properties["continuation"]
-                            .to_string()
-                            .contains("#/$defs/Continuation")
-                    );
-                    assert!(properties.get("profile_fingerprint").is_none());
-                    assert!(properties.get("node_path").is_none());
-                }
-            }
         }
         for index in [2, 6] {
             let input = &tools.tools[index].input_schema["properties"];
@@ -212,15 +116,6 @@ async fn tool_schemas() {
                 .get("sort")
                 .is_none()
         );
-        let top_data = &top_schema["$defs"]["TopData"]["properties"];
-        assert!(top_data.get("metric").is_some());
-        assert!(top_data.get("frame").is_some());
-        assert!(top_data.get("sort").is_none());
-        assert!(top_data.get("focus").is_none());
-        let paths_output = tools.tools[6].output_schema.as_ref().unwrap();
-        let paths_data = &paths_output["$defs"]["PathsData"]["properties"];
-        assert!(paths_data.get("frame").is_some());
-        assert!(paths_data.get("through").is_none());
         let paths_schema = &tools.tools[6].input_schema["$defs"]["FrameWindowInput"]["oneOf"];
         assert_eq!(paths_schema[0]["properties"]["lines"]["minimum"], 1);
         assert_eq!(paths_schema[0]["properties"]["lines"]["maximum"], 4096);

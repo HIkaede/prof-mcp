@@ -98,7 +98,7 @@ def mcp(binary, workspace, repeats, tools=None, prime_aliases=("candidate", "cha
             request("tools/call", {"name": "profile_summary", "arguments": {}})
             cold = time.perf_counter() - started
             tools_list_bytes, listing = request("tools/list", {})
-            schemas = {tool["name"]: len(json.dumps(tool["outputSchema"], ensure_ascii=False, separators=(",", ":")).encode())
+            schemas = {tool["name"]: len(json.dumps(tool["outputSchema"], ensure_ascii=False, separators=(",", ":")).encode()) if "outputSchema" in tool else 0
                        for tool in listing["tools"]}
             # Prime every blob before warm measurements.
             for alias in prime_aliases:
@@ -112,7 +112,7 @@ def mcp(binary, workspace, repeats, tools=None, prime_aliases=("candidate", "cha
                     size, result = request("tools/call", {"name": "profile_" + tool, "arguments": arguments})
                     elapsed += time.perf_counter() - started
                     if not result.get("isError"):
-                        assert result["structuredContent"]["schema_version"] == "2"
+                        assert result["structuredContent"]["schema_version"] == "3"
                 if result.get("isError"):
                     outputs[name] = {"isError": True, "error": json.loads(result["content"][0]["text"])}
                     rows.append({"operation": name, "roundtrip_seconds": elapsed / repeats,

@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 use crate::output::{
-    DiffData, DiffOutput, DiffRow, DiffScopeWeight, ResponseBudget, SCHEMA_VERSION, output_profile,
-    percent,
+    DiffData, DiffOutput, DiffRow, DiffScopeWeight, ResponseBudget, SCHEMA_VERSION,
+    display_percent, output_profile, percent, round_percent,
 };
 
 use super::{
@@ -97,9 +97,9 @@ pub fn diff<'p>(
                 name: row.name,
                 baseline_weight: row.baseline_weight,
                 candidate_weight: row.candidate_weight,
-                baseline_percent: percent(row.baseline_weight, baseline.total_weight),
-                candidate_percent: percent(row.candidate_weight, candidate.total_weight),
-                delta_pp: row.delta_pp,
+                baseline_percent: display_percent(row.baseline_weight, baseline.total_weight),
+                candidate_percent: display_percent(row.candidate_weight, candidate.total_weight),
+                delta_pp: round_percent(row.delta_pp),
             })
         })
         .collect::<Result<_, ApiError>>()?;

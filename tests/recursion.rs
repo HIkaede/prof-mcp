@@ -184,6 +184,8 @@ fn continuation_frames_report_scope_local_percents() {
     assert_eq!(resumed["scope_weight"], 5);
     // The anchor row is scoped to the page, so its inclusive weight is the page weight.
     assert_eq!(frame["inclusive_weight"], 5);
+    assert_eq!(frame["self_weight"], 5);
+    assert_eq!(frame["stack_count"], 1);
     assert_eq!(frame["scope_percent"], 100.0);
     assert_eq!(
         frame["profile_percent"].as_f64().unwrap().round(),
@@ -274,7 +276,10 @@ fn deep_continuation() {
         .unwrap(),
     );
     assert_eq!(response["scope_weight"], 7);
-    assert_eq!(response["data"]["root"]["self_weight"], 0);
+    assert!(
+        response["data"]["root"].get("self_weight").is_none(),
+        "a zero self weight is omitted"
+    );
     assert_eq!(response["data"]["root"]["omitted_weight"], 7);
     let next: Vec<u32> = response["data"]["continuations"][0]["continuation"]["cursor"]
         .as_array()
@@ -356,4 +361,28 @@ fn deep_continuation_cursors_never_exceed_the_response_budget() {
         128
     );
     assert!(page["data"]["continuations"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn callee_continuation_excludes_anchor_self_weight_outside_the_page() {
+    let profile = support::profile("root;a 100\nroot;a;b 1\n");
+    let selector = FrameSelector {
+        frame_name: Some("a".into()),
+        frame_id: None,
+    };
+    let first = query::callees(&profile, &selector, 0, 8, 0.0, None).unwrap();
+    let cursor = &first.data.continuations[0].continuation.cursor;
+    let page = query::callees(
+        &profile,
+        &selector,
+        8,
+        8,
+        0.0,
+        Some((&cursor[1..], profile.fingerprint())),
+    )
+    .unwrap();
+    assert_eq!(page.scope_weight, 1);
+    assert_eq!(page.data.frame.inclusive_weight, 1);
+    assert_eq!(page.data.frame.self_weight, 0);
+    assert_eq!(page.data.frame.stack_count, 1);
 }

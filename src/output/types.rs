@@ -92,12 +92,23 @@ pub struct SummaryData<'a> {
     pub unique_stack_count: usize,
     pub max_depth: usize,
     pub stack_concentration: StackConcentration,
+    pub symbol_coverage: SymbolCoverage,
     pub recursion_detected: Vec<RecursionRow<'a>>,
     pub top_self: Vec<crate::output::FrameRow<'a>>,
     pub top_inclusive: Vec<crate::output::FrameRow<'a>>,
     pub registry: RegistryOutput,
 }
 pub type SummaryOutput<'a> = OutputEnvelope<'a, SummaryData<'a>>;
+
+/// How much of the profile names a location instead of a symbol. perf prints
+/// `[unknown@0x...]` when it cannot resolve a PC, and those names cannot be
+/// attributed to a function.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct SymbolCoverage {
+    pub unresolved_frames: usize,
+    pub frame_count: usize,
+    pub unresolved_self_percent: f64,
+}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct StackConcentration {
@@ -124,18 +135,18 @@ pub struct RegistryOutput {
 pub struct FindData<'a> {
     pub query: &'a str,
     pub mode: MatchMode,
-    pub matches: Vec<crate::output::FrameRow<'a>>,
+    pub matches: crate::output::FrameTable,
 }
 pub type FindOutput<'a> = OutputEnvelope<'a, FindData<'a>>;
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
-pub struct TopData<'a> {
+pub struct TopData {
     pub metric: TopSort,
     pub frame: Option<u32>,
-    pub rows: Vec<crate::output::FrameRow<'a>>,
+    pub rows: crate::output::FrameTable,
 }
 
-pub type TopOutput<'a> = OutputEnvelope<'a, TopData<'a>>;
+pub type TopOutput<'a> = OutputEnvelope<'a, TopData>;
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct TotalFrameBudget {
@@ -154,7 +165,6 @@ pub struct PathRow<'a> {
     pub frames: Vec<&'a str>,
     pub weight: u64,
     pub profile_percent: f64,
-    pub scope_percent: f64,
     pub target_positions: Vec<usize>,
     pub display_target_positions: Vec<usize>,
     pub total_depth: usize,
@@ -187,13 +197,60 @@ pub struct TreeNode<'a> {
     pub node_id: Option<[u32; 2]>,
     pub frame_id: Option<u32>,
     pub name: Option<&'a str>,
+    /// Zero weights and an empty omission count are left out: absent means 0.
+    #[serde(skip_serializing_if = "is_zero_u64")]
     pub self_weight: u64,
     pub total_weight: u64,
     pub profile_percent: f64,
-    pub scope_percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_percent: Option<f64>,
+    #[serde(skip_serializing_if = "is_zero_usize")]
     pub omitted_children: usize,
+    #[serde(skip_serializing_if = "is_zero_u64")]
     pub omitted_weight: u64,
     pub children: Vec<TreeNode<'a>>,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
+/// A `profile_tree` result is either the nested nodes or the rendered lines.
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[serde(untagged)]
+pub enum TreeBody<'a> {
+    Nodes(TreeNode<'a>),
+    Text(String),
+}
+
+impl TreeBody<'_> {
+    /// The nested nodes. Text bodies are the same tree, so callers that ask
+    /// for `format=text` get a string here instead; this is for the default.
+    pub fn nodes(&self) -> &TreeNode<'_> {
+        match self {
+            Self::Nodes(node) => node,
+            Self::Text(_) => panic!("tree body was rendered as text"),
+        }
+    }
+
+    /// Replace the nested nodes with their rendered lines.
+    pub(crate) fn into_text(self) -> Self {
+        match self {
+            Self::Nodes(node) => Self::Text(crate::output::text_tree(&node)),
+            Self::Text(text) => Self::Text(text),
+        }
+    }
+
+    fn root_name(&self) -> &str {
+        match self {
+            Self::Nodes(node) => node.name.unwrap_or("-"),
+            Self::Text(text) => text.lines().next().unwrap_or("-"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
@@ -205,12 +262,13 @@ pub struct TreeContinuation<'a> {
     pub continuation: Continuation,
     pub total_weight: u64,
     pub profile_percent: f64,
-    pub scope_percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_percent: Option<f64>,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 pub struct TreeData<'a> {
-    pub root: TreeNode<'a>,
+    pub root: TreeBody<'a>,
     pub continuations: Vec<TreeContinuation<'a>>,
     pub continuations_truncated: bool,
     pub continuation_limit: usize,
@@ -243,7 +301,8 @@ pub struct DirectionContinuation<'a> {
     pub continuation: Continuation,
     pub total_weight: u64,
     pub profile_percent: f64,
-    pub scope_percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_percent: Option<f64>,
 }
 pub type DirectionOutput<'a> = OutputEnvelope<'a, DirectionData<'a>>;
 
@@ -339,14 +398,6 @@ fn fallback_line(
     format!("profile={alias}; truncated={truncated}; reasons=[{reasons}]; {detail}")
 }
 
-fn names<T>(rows: &[T], limit: usize, name: impl Fn(&T) -> &str) -> String {
-    rows.iter()
-        .take(limit)
-        .map(|row| name(row).to_owned())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 impl FallbackText for SummaryOutput<'_> {
     fn fallback(&self) -> String {
         let top = self
@@ -371,7 +422,7 @@ impl FallbackText for SummaryOutput<'_> {
 
 impl FallbackText for FindOutput<'_> {
     fn fallback(&self) -> String {
-        let names = names(&self.data.matches, 5, |row| row.name);
+        let names = self.data.matches.names(5);
         fallback_line(
             self.profile.alias,
             self.truncated,
@@ -383,7 +434,7 @@ impl FallbackText for FindOutput<'_> {
 
 impl FallbackText for TopOutput<'_> {
     fn fallback(&self) -> String {
-        let names = names(&self.data.rows, 5, |row| row.name);
+        let names = self.data.rows.names(5);
         fallback_line(
             self.profile.alias,
             self.truncated,
@@ -427,7 +478,7 @@ impl FallbackText for TreeOutput<'_> {
             &self.truncation_reasons,
             &format!(
                 "tree_root={}, continuations={}",
-                self.data.root.name.unwrap_or("-"),
+                self.data.root.root_name(),
                 self.data.continuations.len()
             ),
         )
@@ -457,7 +508,7 @@ impl FallbackText for DiffOutput<'_> {
             .rows
             .iter()
             .take(5)
-            .map(|row| format!("{}:{:+.4}pp", row.name, row.delta_pp))
+            .map(|row| format!("{}:{:+.2}pp", row.name, row.delta_pp))
             .collect::<Vec<_>>()
             .join(", ");
         fallback_line(

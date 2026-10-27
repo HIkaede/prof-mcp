@@ -12,8 +12,8 @@ use serde_json::json;
 
 use crate::error::ApiError;
 pub(crate) use crate::output::{
-    TreeTruncation, TruncationReason, frame_row, frame_row_with_percent_weight, percent,
-    typed_envelope as envelope,
+    TreeTruncation, TruncationReason, display_percent, frame_row, frame_row_with_percent_weight,
+    percent, scope_percent, typed_envelope as envelope,
 };
 pub(crate) use crate::profile::{FrameId, FrameStats, Profile};
 
@@ -216,6 +216,11 @@ pub(crate) struct RenderState<'a, C> {
     pub(crate) bytes: crate::output::ResponseBudget,
 }
 
+/// How many truncated positions a response returns as resumable cursors. Each
+/// one repeats its profile, fingerprint and tool, so a long list dwarfs the
+/// tree it annotates; the rest are counted in `continuations_omitted`.
+pub(crate) const CONTINUATION_LIMIT: usize = 16;
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct TruncationStats {
     pub(crate) count: usize,
@@ -249,7 +254,7 @@ impl<'a, C> RenderState<'a, C> {
             reason_stats,
             continuations,
             continuation_count,
-            continuation_limit: 128,
+            continuation_limit: CONTINUATION_LIMIT,
             frame_path: Vec::new(),
             bytes: crate::output::ResponseBudget::new(),
         }

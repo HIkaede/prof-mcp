@@ -22,14 +22,34 @@ class TransportTests(unittest.TestCase):
             subprocess.run([str(BINARY), "register", str(source), "--name", "base"],
                            cwd=workspace, check=True, stdout=subprocess.DEVNULL)
             result = query(BINARY, workspace, "profile_top", {"metric": "self", "frame": {"frame_name": "root"}, "limit": 1})
-            self.assertEqual(result["data"]["rows"][0]["name"], "parse")
-            self.assertEqual(result["data"]["rows"][0]["self_weight"], 40)
+            rows = result["data"]["rows"]
+            first = dict(zip(rows["columns"], rows["rows"][0]))
+            self.assertEqual(first["name"], "parse")
+            self.assertEqual(first["self_weight"], 40)
             self.assertEqual(result["data"]["metric"], "self")
             self.assertIsInstance(result["data"]["frame"], int)
             paths = query(BINARY, workspace, "profile_paths", {"frame": {"frame_name": "parse"}, "limit": 1})
             self.assertEqual(paths["data"]["paths"][0]["frames"], ["root", "parse"])
             self.assertIsInstance(paths["data"]["frame"], int)
             self.assertTrue((workspace / "queries.jsonl").is_file())
+
+    def test_benchmark_without_output_schemas(self):
+        from benchmark import mcp
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            source = workspace / "sample.folded"
+            source.write_text("root;parse 40\nroot;read 10\n")
+            subprocess.run([str(BINARY), "register", str(source), "--name", "base"],
+                           cwd=workspace, check=True, stdout=subprocess.DEVNULL)
+            popen = subprocess.Popen
+            def start_without_time(argv, **kwargs):
+                Path(argv[4]).write_text("0")
+                return popen(argv[5:], **kwargs)
+            with patch("benchmark.subprocess.Popen", side_effect=start_without_time):
+                result = mcp(BINARY, workspace, 1, tools=[("summary", "summary", {})],
+                             prime_aliases=("base",))
+            self.assertEqual(result["warm"][0]["output_schema_bytes"], 0)
+            self.assertGreater(result["warm"][0]["structured_content_bytes"], 0)
 
     def test_error_results(self):
         with tempfile.TemporaryDirectory() as directory:

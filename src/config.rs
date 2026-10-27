@@ -28,9 +28,9 @@ pub enum Command {
         #[arg(long, default_value_t = 512)]
         max_cache_mib: u64,
     },
-    /// Validate and register one folded profile in the current workspace.
+    /// Validate and register one profile artifact in the current workspace.
     Register {
-        /// Folded profile path, or - to read stdin.
+        /// Folded profile, perf.data, or perf script text; - reads stdin.
         #[arg(value_name = "PROFILE")]
         profile: std::path::PathBuf,
         #[arg(long, value_name = "ALIAS")]

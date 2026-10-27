@@ -199,7 +199,10 @@ mod text_tests {
         let profile = profile();
         let root = [profile.cct.root, 0];
         let cut = crate::query::tree(&profile, root, None, 8, 1, 0.0).unwrap();
-        assert_eq!(cut.data.root.name, None, "virtual root has no frame");
+        let crate::output::TreeBody::Nodes(node) = &cut.data.root else {
+            panic!("default format is nested nodes");
+        };
+        assert_eq!(node.name, None, "virtual root has no frame");
         let child = &cut.data.continuations[0];
         let mut child_tree = crate::query::tree(
             &profile,

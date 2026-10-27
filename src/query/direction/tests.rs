@@ -42,9 +42,11 @@ fn assert_percentages_valid(node: &TreeNode) {
         "profile_percent out of range: {}",
         node.profile_percent
     );
+    // Omitted when the scope is the whole profile; always in range when present.
     assert!(
-        node.scope_percent >= 0.0 && node.scope_percent <= 100.0,
-        "scope_percent out of range: {}",
+        node.scope_percent
+            .is_none_or(|value| (0.0..=100.0).contains(&value)),
+        "scope_percent out of range: {:?}",
         node.scope_percent
     );
     for child in &node.children {

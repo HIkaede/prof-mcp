@@ -394,3 +394,32 @@ fn unknown_names_keep_literal_brackets() {
         );
     }
 }
+
+#[test]
+fn sniffing_bounds_headers_by_file_and_line_limits() {
+    for limits in [
+        BuildLimits {
+            max_file_bytes: 4,
+            ..BuildLimits::default()
+        },
+        BuildLimits {
+            max_line_bytes: 4,
+            ..BuildLimits::default()
+        },
+    ] {
+        assert!(super::read_head(&mut Cursor::new(b"# long header\n"), limits).is_err());
+    }
+}
+
+#[test]
+fn embedded_carriage_returns_produce_valid_folded_frames() {
+    let input = b"w\rk 1 1.0: 1 cycles:\n  7 f\roo (/tmp/a\rb)\n";
+    let mut output = Vec::new();
+    collapse_perf_script(Cursor::new(input), &mut output, BuildLimits::default()).unwrap();
+    assert_eq!(output, b"w%0Dk;f%0Doo [/tmp/a%0Db] 1\n");
+    let profile = crate::profile::ProfileBuilder::new(BuildLimits::default())
+        .from_reader(Cursor::new(output), "capture.folded".into())
+        .unwrap();
+    assert_eq!(profile.total_weight(), 1);
+    assert_eq!(super::encode_frame("%0D"), "%250D");
+}

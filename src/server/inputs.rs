@@ -90,6 +90,16 @@ pub(crate) struct TopInput {
     pub frame: Option<FrameSelectorInput>,
     pub name_regex: Option<String>,
 }
+/// How a tree is rendered. `text` is one indented line per node: smaller and
+/// easier to read, but not addressable field by field.
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TreeFormat {
+    #[default]
+    Json,
+    Text,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TreeInput {
@@ -109,6 +119,9 @@ pub(crate) struct TreeInput {
     #[serde(default = "default_tree_percent")]
     #[schemars(range(min = 0.0, max = 100.0))]
     pub min_scope_percent: f64,
+    /// `text` renders one indented line per node.
+    #[serde(default)]
+    pub format: TreeFormat,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

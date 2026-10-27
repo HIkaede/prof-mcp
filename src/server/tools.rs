@@ -6,11 +6,7 @@ use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, to
 use super::ProfileServer;
 use super::inputs::{
     Continuation, ContinuationTool, DiffInput, DirectionInput, FindInput, PathsInput, ProfileInput,
-    TopInput, TreeInput,
-};
-use super::outputs::{
-    DiffOutput, DirectionOutput, FindOutput, PathsOutput, SummaryOutput, TopOutput, TreeOutput,
-    typed_output_schema,
+    TopInput, TreeFormat, TreeInput,
 };
 use super::respond::{failure, success, tag_alias, tag_direction, tag_registry, tag_tree};
 use crate::error::ApiError;
@@ -23,7 +19,7 @@ impl ProfileServer {
         Self::tool_router()
     }
 
-    #[tool(description = "Summarize a folded stack profile and list registry aliases.", output_schema = typed_output_schema::<SummaryOutput>())]
+    #[tool(description = "Summarize a folded stack profile and list registry aliases.")]
     pub(crate) async fn profile_summary(
         &self,
         Parameters(input): Parameters<ProfileInput>,
@@ -44,7 +40,9 @@ impl ProfileServer {
         )
         .await
     }
-    #[tool(description = "Find exact folded-frame identities by contains or regex.", output_schema = typed_output_schema::<FindOutput>())]
+    #[tool(
+        description = "Find exact folded-frame identities by contains or regex. `matches` is a table: `columns` names the fields, each `rows` entry holds the values in that order."
+    )]
     pub(crate) async fn profile_find_symbols(
         &self,
         Parameters(input): Parameters<FindInput>,
@@ -57,7 +55,9 @@ impl ProfileServer {
         })
         .await
     }
-    #[tool(description = "Rank self or inclusive folded-frame weights.", output_schema = typed_output_schema::<TopOutput>())]
+    #[tool(
+        description = "Rank self or inclusive folded-frame weights. `rows` is a table: `columns` names the fields, each `rows` entry holds the values in that order."
+    )]
     pub(crate) async fn profile_top(
         &self,
         Parameters(input): Parameters<TopInput>,
@@ -81,7 +81,9 @@ impl ProfileServer {
         })
         .await
     }
-    #[tool(description = "Expand one deterministic top-down CCT node.", output_schema = typed_output_schema::<TreeOutput>())]
+    #[tool(
+        description = "Expand one deterministic top-down CCT node. Use profile_callees to expand the subtree of a specific frame. Zero-valued node fields are omitted; format=text renders one indented line per node as `name#frame_id total= self= pct%` plus `+omitted(weight)`."
+    )]
     pub(crate) async fn profile_tree(
         &self,
         Parameters(input): Parameters<TreeInput>,
@@ -113,18 +115,21 @@ impl ProfileServer {
                 input.min_scope_percent,
             )?;
             tag_tree(&mut output, &loaded.alias);
+            if input.format == TreeFormat::Text {
+                output.data.root = output.data.root.into_text();
+            }
             Ok(success(output))
         })
         .await
     }
-    #[tool(description = "Show callers of one exact folded-frame identity.", output_schema = typed_output_schema::<DirectionOutput>())]
+    #[tool(description = "Show callers of one exact folded-frame identity.")]
     pub(crate) async fn profile_callers(
         &self,
         Parameters(input): Parameters<DirectionInput>,
     ) -> CallToolResult {
         self.direction(input, ContinuationTool::Callers).await
     }
-    #[tool(description = "Show callees of one exact folded-frame identity.", output_schema = typed_output_schema::<DirectionOutput>())]
+    #[tool(description = "Show callees of one exact folded-frame identity.")]
     pub(crate) async fn profile_callees(
         &self,
         Parameters(input): Parameters<DirectionInput>,
@@ -183,7 +188,7 @@ impl ProfileServer {
         })
         .await
     }
-    #[tool(description = "Return heavy stacks containing frame; display may be cropped.", output_schema = typed_output_schema::<PathsOutput>())]
+    #[tool(description = "Return heavy stacks containing frame; display may be cropped.")]
     pub(crate) async fn profile_paths(
         &self,
         Parameters(input): Parameters<PathsInput>,
@@ -203,7 +208,7 @@ impl ProfileServer {
         })
         .await
     }
-    #[tool(description = "Compare exact frame names between two folded profiles.", output_schema = typed_output_schema::<DiffOutput>())]
+    #[tool(description = "Compare exact frame names between two folded profiles.")]
     pub(crate) async fn profile_diff(
         &self,
         Parameters(input): Parameters<DiffInput>,

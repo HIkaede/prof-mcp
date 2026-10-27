@@ -164,7 +164,7 @@ def compare_outputs(baseline, candidate, allow_direction_improvement=False):
             def node_count(node):
                 return 1 + sum(node_count(child) for child in node.get("children", []))
             budget = 2 if name.endswith("_small") else 32 if "_resume_" in name else 64
-            assert after["schema_version"] == "2" and node_count(after["data"]["root"]) <= budget
+            assert after["schema_version"] == "3" and node_count(after["data"]["root"]) <= budget
             improved.append(name)
             continue
         raise AssertionError(f"semantic mismatch: {name}")
@@ -236,7 +236,7 @@ def self_check():
     assert normalize({"tool": "profile_callers", "cursor": [1, 2]}) == {"tool": "profile_callers", "cursor": [1, 2]}
     assert normalize({"node_id": None, "name": "root"}) == {"node_id": None, "name": "root"}
     before = {"callees_all": {"isError": True, "error": {"details": {"resource": "direction_nodes"}}}}
-    after = {"callees_all": {"schema_version": "2", "data": {"root": {"children": []}}}}
+    after = {"callees_all": {"schema_version": "3", "data": {"root": {"children": []}}}}
     assert compare_outputs(before, after, True) == ["callees_all"]
     try:
         compare_outputs(before, after)

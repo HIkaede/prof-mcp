@@ -73,7 +73,7 @@ async fn non_utf8_workspace_metadata() {
     let cache = ProfileCache::new(workspace, 1024, 2).unwrap();
     let loaded = cache.load(None).await.unwrap();
     let summary = support::json(prof_mcp::query::summary(&loaded.profile).unwrap());
-    assert_eq!(summary["schema_version"], "2");
+    assert_eq!(summary["schema_version"], "3");
     assert_eq!(
         summary["profile"]["fingerprint"],
         loaded.profile.fingerprint()

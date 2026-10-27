@@ -4,7 +4,8 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     ffi::OsString,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, Write},
+    path::Path,
     process::{Child, Command, Stdio},
 };
 
@@ -50,41 +51,14 @@ pub fn run(
             .status()
             .context("could not start perf record")?;
         if !status.success() {
-            bail!("perf record failed: {status}");
+            bail!(
+                "perf record failed: {status} (perf needs perf_event_paranoid below 3, or register an existing perf.data with `prof-mcp register <file>`)"
+            );
         }
 
         // The alias is validated up front, so this join cannot escape the temp dir.
         let folded = temporary.path().join(format!("{alias}.folded"));
-        let file = File::create(&folded).context("could not store folded capture")?;
-        let mut script = PerfScript(
-            Command::new("perf")
-                .args(["script", "-i"])
-                .arg(&perf_data)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .context("could not start perf script")?,
-        );
-        let stdout = script
-            .0
-            .stdout
-            .take()
-            .context("perf script stdout unavailable")?;
-        let mut writer = BufWriter::new(file);
-        collapse_perf_script(
-            BufReader::new(stdout),
-            &mut writer,
-            BuildLimits {
-                max_file_bytes: config.max_file_size_bytes(),
-                ..BuildLimits::default()
-            },
-        )?;
-        writer.flush().context("could not flush folded capture")?;
-        let status = script.0.wait().context("could not wait for perf script")?;
-        if !status.success() {
-            bail!("perf script failed: {status}");
-        }
-
+        fold_perf_data(config, &perf_data, &folded)?;
         registry::register(
             &std::env::current_dir()?,
             &folded,
@@ -93,6 +67,236 @@ pub fn run(
         )
         .map_err(anyhow::Error::msg)
     }
+}
+
+/// Which profile artifact a file or stream holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputKind {
+    Folded,
+    PerfScript,
+    PerfData,
+}
+
+/// Identify an artifact from its leading bytes. Folded text is the fallback, so
+/// a file that is neither perf.data nor perf script output keeps the old meaning.
+pub fn sniff_input(head: &[u8]) -> InputKind {
+    if head.starts_with(b"PERFILE2") {
+        return InputKind::PerfData;
+    }
+    let text = String::from_utf8_lossy(head);
+    // A truncated tail line cannot be classified; ignore it instead of guessing.
+    let complete = match text.ends_with('\n') {
+        true => text.as_ref(),
+        false => text.rsplit_once('\n').map_or("", |(lines, _)| lines),
+    };
+    for line in complete.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        return match parse_event_header(line) {
+            Some(_) => InputKind::PerfScript,
+            None => InputKind::Folded,
+        };
+    }
+    InputKind::Folded
+}
+
+/// Register whichever profile artifact `source` holds; `None` reads stdin.
+pub fn register_input(
+    config: &Config,
+    source: Option<&Path>,
+    explicit_name: Option<&str>,
+) -> Result<registry::Registration> {
+    let workspace = std::env::current_dir()?;
+    let max_file_size = config.max_file_size_bytes();
+    let stdin_source = if source.is_none() {
+        validate_alias(explicit_name.unwrap_or("stdin"))?;
+        let mut file = tempfile::NamedTempFile::new().context("could not spool stdin")?;
+        let bytes = std::io::copy(
+            &mut std::io::stdin()
+                .lock()
+                .take(max_file_size.saturating_add(1)),
+            &mut file,
+        )
+        .context("could not spool stdin")?;
+        if bytes > max_file_size {
+            bail!("profile exceeds input byte limit");
+        }
+        Some(file)
+    } else {
+        None
+    };
+    let source = source.unwrap_or_else(|| stdin_source.as_ref().unwrap().path());
+    let mut file = File::open(source).context("could not read profile")?;
+    let head = read_head(&mut file, build_limits(config))?;
+    let kind = sniff_input(&head);
+    if kind == InputKind::Folded {
+        return if stdin_source.is_some() {
+            file.rewind().context("could not rewind stdin")?;
+            registry::register_reader(
+                &workspace,
+                file,
+                "stdin.folded",
+                explicit_name,
+                max_file_size,
+            )
+        } else {
+            registry::register(&workspace, source, explicit_name, max_file_size)
+        }
+        .map_err(anyhow::Error::msg);
+    }
+    let explicit_name = explicit_name.or_else(|| stdin_source.as_ref().map(|_| "stdin"));
+    let alias = explicit_name.map_or_else(|| registry::default_alias(source), ToOwned::to_owned);
+    validate_alias(&alias)?;
+    let source_name = if stdin_source.is_some() {
+        "stdin"
+    } else {
+        source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("profile")
+    };
+    if kind == InputKind::PerfData {
+        fold_perf_data_to_registry(
+            config,
+            &workspace,
+            &alias,
+            source_name,
+            source,
+            max_file_size,
+        )
+    } else {
+        let file = File::open(source).context("could not read perf script")?;
+        fold_stream_to_registry(
+            config,
+            &workspace,
+            &alias,
+            source_name,
+            BufReader::new(file),
+            max_file_size,
+        )
+    }
+}
+
+fn validate_alias(alias: &str) -> Result<()> {
+    if registry::valid_alias(alias) {
+        return Ok(());
+    }
+    bail!("--name must be 1-64 bytes of ASCII letters, digits, '.', '_' or '-'")
+}
+
+fn read_head(reader: &mut (impl Read + Seek), limits: BuildLimits) -> Result<Vec<u8>> {
+    let mut head = Vec::new();
+    (&mut *reader).take(8).read_to_end(&mut head)?;
+    if head.starts_with(b"PERFILE2") {
+        return Ok(head);
+    }
+    reader.rewind().context("could not rewind profile")?;
+    let mut reader = BufReader::new(reader).take(limits.max_file_bytes.saturating_add(1));
+    let mut bytes = 0_u64;
+    loop {
+        head.clear();
+        let count = (&mut reader)
+            .take((limits.max_line_bytes as u64).saturating_add(1))
+            .read_until(b'\n', &mut head)
+            .context("could not read profile head")?;
+        bytes += count as u64;
+        if bytes > limits.max_file_bytes {
+            bail!("profile exceeds input byte limit");
+        }
+        if count > limits.max_line_bytes {
+            bail!("profile exceeds line byte limit");
+        }
+        let line = String::from_utf8_lossy(&head);
+        if count == 0 || !(line.trim().is_empty() || line.trim_start().starts_with('#')) {
+            return Ok(head);
+        }
+    }
+}
+
+fn build_limits(config: &Config) -> BuildLimits {
+    BuildLimits {
+        max_file_bytes: config.max_file_size_bytes(),
+        ..BuildLimits::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fold_perf_data(config: &Config, perf_data: &Path, folded: &Path) -> Result<()> {
+    let file = File::create(folded).context("could not store folded capture")?;
+    let mut script = PerfScript(
+        Command::new("perf")
+            .args(["script", "-i"])
+            .arg(perf_data)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("could not start perf script")?,
+    );
+    let stdout = script
+        .0
+        .stdout
+        .take()
+        .context("perf script stdout unavailable")?;
+    let mut writer = BufWriter::new(file);
+    collapse_perf_script(BufReader::new(stdout), &mut writer, build_limits(config))?;
+    writer.flush().context("could not flush folded capture")?;
+    let status = script.0.wait().context("could not wait for perf script")?;
+    if !status.success() {
+        bail!("perf script failed: {status}");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fold_perf_data(_: &Config, _: &Path, _: &Path) -> Result<()> {
+    bail!("perf.data import is only supported on Linux")
+}
+
+fn fold_perf_data_to_registry(
+    config: &Config,
+    workspace: &Path,
+    alias: &str,
+    source_name: &str,
+    perf_data: &Path,
+    max_file_size: u64,
+) -> Result<registry::Registration> {
+    let temporary = tempfile::tempdir().context("could not create capture directory")?;
+    let folded = temporary.path().join(format!("{alias}.folded"));
+    fold_perf_data(config, perf_data, &folded)?;
+    register_folded(workspace, &folded, alias, source_name, max_file_size)
+}
+
+fn fold_stream_to_registry<R: BufRead>(
+    config: &Config,
+    workspace: &Path,
+    alias: &str,
+    source_name: &str,
+    reader: R,
+    max_file_size: u64,
+) -> Result<registry::Registration> {
+    let temporary = tempfile::tempdir().context("could not create capture directory")?;
+    let folded = temporary.path().join(format!("{alias}.folded"));
+    let file = File::create(&folded).context("could not store folded capture")?;
+    let mut writer = BufWriter::new(file);
+    collapse_perf_script(reader, &mut writer, build_limits(config))?;
+    writer.flush().context("could not flush folded capture")?;
+    register_folded(workspace, &folded, alias, source_name, max_file_size)
+}
+
+/// Register a folded file folded from `source_name`, so the manifest records the
+/// artifact the user named rather than the temporary fold.
+fn register_folded(
+    workspace: &Path,
+    folded: &Path,
+    alias: &str,
+    source_name: &str,
+    max_file_size: u64,
+) -> Result<registry::Registration> {
+    let reader = File::open(folded).context("could not read folded capture")?;
+    registry::register_reader(workspace, reader, source_name, Some(alias), max_file_size)
+        .map_err(anyhow::Error::msg)
 }
 
 // The stream may still be producing output when parsing or file writes fail.
@@ -113,13 +317,12 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
     limits: BuildLimits,
 ) -> Result<()> {
     let mut collapsed = BTreeMap::<String, u64>::new();
-    let mut aggregation_bytes = 0_usize;
     let mut process = None;
     let mut period = 1_u64;
     let mut stack = Vec::<String>::new();
+    let mut stats = SampleStats::default();
     let mut event_filter = None;
     let mut input_bytes = 0_u64;
-    let mut total_weight = 0_u64;
     let mut sample_bytes = 0_usize;
     let mut line_bytes = Vec::new();
     let mut line_no = 0;
@@ -160,8 +363,7 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
                 &mut process,
                 period,
                 &mut stack,
-                &mut total_weight,
-                &mut aggregation_bytes,
+                &mut stats,
                 limits,
             )?;
             continue;
@@ -172,8 +374,7 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
                 &mut process,
                 period,
                 &mut stack,
-                &mut total_weight,
-                &mut aggregation_bytes,
+                &mut stats,
                 limits,
             )?;
             if event_filter
@@ -214,10 +415,15 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
         &mut process,
         period,
         &mut stack,
-        &mut total_weight,
-        &mut aggregation_bytes,
+        &mut stats,
         limits,
     )?;
+    if stats.skipped_no_stack > 0 {
+        eprintln!(
+            "skipped {} perf samples with no stack frames",
+            stats.skipped_no_stack
+        );
+    }
     if collapsed.is_empty() {
         bail!("perf script contains no samples with stack frames");
     }
@@ -243,23 +449,33 @@ pub fn collapse_perf_script<R: BufRead, W: Write>(
     Ok(())
 }
 
+#[derive(Default)]
+struct SampleStats {
+    total_weight: u64,
+    aggregation_bytes: usize,
+    skipped_no_stack: usize,
+}
+
 fn finish_sample(
     collapsed: &mut BTreeMap<String, u64>,
     process: &mut Option<String>,
     period: u64,
     stack: &mut Vec<String>,
-    total_weight: &mut u64,
-    aggregation_bytes: &mut usize,
+    stats: &mut SampleStats,
     limits: BuildLimits,
 ) -> Result<()> {
     let Some(process) = process.take() else {
         stack.clear();
         return Ok(());
     };
+    // perf emits samples it could not unwind (no --call-graph, or an unwinder
+    // failure). One such sample must not discard the whole profile.
     if stack.is_empty() {
-        bail!("perf sample has no stack frames");
+        stats.skipped_no_stack += 1;
+        return Ok(());
     }
-    *total_weight = total_weight
+    stats.total_weight = stats
+        .total_weight
         .checked_add(period)
         .filter(|sum| *sum <= limits.max_total_weight)
         .context("perf sample total weight exceeds maximum")?;
@@ -282,10 +498,10 @@ fn finish_sample(
             // Estimate retained strings and tree overhead; this is not an RSS limit.
             let bytes = key_bytes
                 .checked_add(128)
-                .and_then(|bytes| aggregation_bytes.checked_add(bytes))
+                .and_then(|bytes| stats.aggregation_bytes.checked_add(bytes))
                 .filter(|bytes| *bytes <= limits.max_model_bytes)
                 .context("folded capture exceeds aggregation byte limit")?;
-            *aggregation_bytes = bytes;
+            stats.aggregation_bytes = bytes;
             entry.insert(0)
         }
     };
@@ -338,7 +554,7 @@ fn is_pid_field(field: &str) -> bool {
 fn encode_frame(frame: &str) -> String {
     let extra = frame
         .bytes()
-        .filter(|byte| matches!(byte, b'%' | b';'))
+        .filter(|byte| matches!(byte, b'%' | b';' | b'\r'))
         .count()
         .saturating_mul(2);
     let mut encoded = String::with_capacity(frame.len().saturating_add(extra));
@@ -346,6 +562,7 @@ fn encode_frame(frame: &str) -> String {
         match ch {
             '%' => encoded.push_str("%25"),
             ';' => encoded.push_str("%3B"),
+            '\r' => encoded.push_str("%0D"),
             ch => encoded.push(ch),
         }
     }

@@ -1,4 +1,4 @@
-use crate::output::{FindData, FindOutput, ResponseBudget};
+use crate::output::{FindData, FindOutput, FrameTable, ResponseBudget};
 
 use super::{
     ApiError, MatchMode, Profile, check_limit, compile_regex, envelope, frame_row, row_limit_reason,
@@ -31,7 +31,10 @@ pub fn find_symbols<'p>(
     }
     let truncation_reasons = row_limit_reason(limit, available);
     let warnings = if ids.is_empty() {
-        vec!["No exact frame identities matched."]
+        vec![match mode {
+            MatchMode::Contains => "No frame name contains the query.",
+            MatchMode::Regex => "No frame name matches the pattern.",
+        }]
     } else {
         Vec::new()
     };
@@ -57,7 +60,7 @@ pub fn find_symbols<'p>(
         FindData {
             query,
             mode,
-            matches: rows,
+            matches: FrameTable::new(&rows),
         },
     ))
 }

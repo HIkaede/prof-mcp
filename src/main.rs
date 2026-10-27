@@ -22,7 +22,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Command::Setup { dry_run }) => setup::run(dry_run),
         Some(Command::Serve { .. }) => run_stdio(config).await,
-        Some(Command::Register { profile, name }) => register(&config, &profile, name.as_deref()),
+        Some(Command::Register { profile, name }) => {
+            let source = (profile != std::path::Path::new("-")).then_some(profile.as_path());
+            let registration = capture::register_input(&config, source, name.as_deref())?;
+            print_registration(&registration)
+        }
         Some(Command::List) => {
             let status = registry::status(&std::env::current_dir()?).map_err(anyhow::Error::msg)?;
             emit(format_args!("registry={}", status.registry_root.display()))?;
@@ -88,23 +92,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
-}
-
-fn register(config: &Config, profile: &std::path::Path, name: Option<&str>) -> Result<()> {
-    let workspace = std::env::current_dir()?;
-    let registration = if profile == std::path::Path::new("-") {
-        registry::register_reader(
-            &workspace,
-            std::io::stdin().lock(),
-            "stdin.folded",
-            name,
-            config.max_file_size_bytes(),
-        )
-    } else {
-        registry::register(&workspace, profile, name, config.max_file_size_bytes())
-    }
-    .map_err(anyhow::Error::msg)?;
-    print_registration(&registration)
 }
 
 fn print_registration(registration: &registry::Registration) -> Result<()> {

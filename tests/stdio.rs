@@ -178,7 +178,7 @@ fn stdio_protocol() {
         json!({"name":"profile_summary", "arguments":{}}),
     );
     assert_eq!(available["isError"], false);
-    assert_eq!(available["structuredContent"]["schema_version"], "2");
+    assert_eq!(available["structuredContent"]["schema_version"], "3");
     assert_eq!(available["structuredContent"]["profile"]["alias"], "sample");
     assert_eq!(available["structuredContent"]["scope_weight"], 3);
     let symbols = server.request(
@@ -187,9 +187,9 @@ fn stdio_protocol() {
         json!({"name":"profile_find_symbols", "arguments":{"query":"函数"}}),
     );
     assert_eq!(symbols["isError"], false);
-    assert_eq!(
-        symbols["structuredContent"]["data"]["matches"][0]["name"],
-        "函数"
-    );
+    let matches = &symbols["structuredContent"]["data"]["matches"];
+    let columns = matches["columns"].as_array().unwrap();
+    let name = columns.iter().position(|c| c == "name").unwrap();
+    assert_eq!(matches["rows"][0][name], "函数");
     server.finish();
 }

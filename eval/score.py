@@ -37,7 +37,8 @@ def matches(expected, actual):
         return isinstance(actual, list) and len(expected) == len(actual) and all(
             matches(a, b) for a, b in zip(expected, actual))
     if isinstance(expected, float):
-        return isinstance(actual, (int, float)) and math.isclose(expected, actual, abs_tol=1e-9)
+        # Percentage-point outputs use two decimal places in schema v3.
+        return isinstance(actual, (int, float)) and math.isclose(expected, actual, rel_tol=0, abs_tol=0.005)
     return expected == actual
 
 
@@ -62,6 +63,9 @@ def self_check():
     assert not matches({"weight": 15}, {"weight": 30})
     assert not matches([1], [1, 2])
     assert matches(100 / 6, 16.666666666666664)
+    assert matches(EXPECTED["diff"], {**EXPECTED["diff"], "delta_pp": 16.67})
+    assert not matches(EXPECTED["diff"], {**EXPECTED["diff"], "delta_pp": 16.66})
+    assert not matches(EXPECTED["diff"], {**EXPECTED["diff"], "baseline_weight": 10.001})
     assert not matches(1.0, float("nan"))
     rows = []
     for line in (ROOT / "corpus/baseline.folded").read_text().splitlines():

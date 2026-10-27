@@ -270,3 +270,159 @@ fn unnamed_capture_derives_alias_from_command() {
         "worker;overload(double) [/tmp/a] 3\nworker;overload(int) [/tmp/a] 2\n"
     );
 }
+
+#[test]
+fn sniff_input_identifies_artifacts() {
+    use prof_mcp::capture::{InputKind, sniff_input};
+    assert_eq!(sniff_input(b"PERFILE2\0\0\0\0"), InputKind::PerfData);
+    assert_eq!(
+        sniff_input(b"worker 12 1.0: 2 cycles:\n  7 f (/tmp/a)\n"),
+        InputKind::PerfScript
+    );
+    assert_eq!(sniff_input(b"# header\na;b 3\nb 1\n"), InputKind::Folded);
+    assert_eq!(sniff_input(b"a;b 3"), InputKind::Folded);
+    assert_eq!(sniff_input(b""), InputKind::Folded);
+}
+
+/// A fake `perf` that replays `input` for `perf script` only.
+fn script_only_perf(root: &std::path::Path) -> std::path::PathBuf {
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let perf = bin.join("perf");
+    fs::write(
+        &perf,
+        "#!/bin/sh\nif [ \"$1\" = script ]; then /bin/cat \"$3\" > \"$FAKE_ROOT/received.data\"; /bin/cat \"$FAKE_ROOT/input\"; exit 0; fi\nexit 2\n",
+    )
+    .unwrap();
+    fs::set_permissions(&perf, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+const ONE_EMPTY_SAMPLE: &str = "w 1 1.0: 2 cycles:\n  7 f (/tmp/a)\n\nw 1 2.0: 5 cycles:\n\nw 1 3.0: 1 cycles:\n  7 g (/tmp/a)\n";
+
+#[test]
+fn register_perf_data_folds_and_skips_empty_stacks() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = script_only_perf(root.path());
+    fs::write(root.path().join("perf.data"), b"PERFILE2\0opaque").unwrap();
+    fs::write(root.path().join("input"), ONE_EMPTY_SAMPLE).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(root.path())
+        .args(["register", "perf.data"])
+        .env("PATH", &bin)
+        .env("FAKE_ROOT", root.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("skipped 1 perf samples with no stack frames"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("registered alias=perf"));
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.path().join(".prof-mcp/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["profiles"]["perf"]["source_name"], "perf.data");
+    let profile = registry::resolve(root.path(), Some("perf")).unwrap();
+    assert_eq!(
+        fs::read_to_string(&profile.path).unwrap(),
+        "w;f [/tmp/a] 2\nw;g [/tmp/a] 1\n"
+    );
+}
+
+#[test]
+fn register_perf_script_text_and_stdin() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = script_only_perf(root.path());
+    let input = format!("#{}\n{}", "header".repeat(1400), ONE_EMPTY_SAMPLE);
+    fs::write(root.path().join("samples.txt"), &input).unwrap();
+    let file_output = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(root.path())
+        .args(["register", "samples.txt", "--name", "text"])
+        .env("PATH", &bin)
+        .env("FAKE_ROOT", root.path())
+        .output()
+        .unwrap();
+    assert!(
+        file_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&file_output.stderr)
+    );
+    assert_eq!(
+        registry::resolve(root.path(), Some("text")).unwrap().alias,
+        "text"
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(root.path())
+        .args(["register", "-", "--name", "piped"])
+        .env("PATH", &bin)
+        .env("FAKE_ROOT", root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("registered alias=piped"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.path().join(".prof-mcp/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["profiles"]["piped"]["source_name"], "stdin");
+}
+
+#[test]
+fn register_binary_perf_data_from_stdin() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let bin = script_only_perf(root.path());
+    fs::write(root.path().join("input"), ONE_EMPTY_SAMPLE).unwrap();
+    let data = b"PERFILE2\0\xffopaque";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prof-mcp"))
+        .current_dir(root.path())
+        .args(["register", "-"])
+        .env("PATH", &bin)
+        .env("FAKE_ROOT", root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(data).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(root.path().join("received.data")).unwrap(), data);
+    let profile = registry::resolve(root.path(), Some("stdin")).unwrap();
+    assert_eq!(
+        fs::read_to_string(profile.path).unwrap(),
+        "w;f [/tmp/a] 2\nw;g [/tmp/a] 1\n"
+    );
+}

@@ -236,3 +236,39 @@ fn bounded_diff_matches_unbounded_reference_for_unicode_ties() {
         }
     }
 }
+
+#[test]
+fn diff_rounds_the_exact_delta_after_ranking() {
+    let baseline = support::profile("A 4\nfiller 99996\n");
+    let candidate = support::profile("A 6\nB 4\nfiller 99990\n");
+    let forward = query::diff(
+        &baseline,
+        &candidate,
+        TopSort::SelfWeight,
+        DiffSort::Regression,
+        10,
+        None,
+    )
+    .unwrap();
+    let rows = &forward.data.rows;
+    assert_eq!(
+        rows.iter().map(|row| row.name).collect::<Vec<_>>(),
+        ["B", "A", "filler"]
+    );
+    assert_eq!(rows[1].baseline_percent, 0.0);
+    assert_eq!(rows[1].candidate_percent, 0.01);
+    assert_eq!(rows[1].delta_pp, 0.0);
+    assert_eq!(rows[2].delta_pp, -0.01);
+    let reverse = query::diff(
+        &candidate,
+        &baseline,
+        TopSort::SelfWeight,
+        DiffSort::Improvement,
+        10,
+        None,
+    )
+    .unwrap();
+    assert_eq!(reverse.data.rows[1].name, "A");
+    assert_eq!(reverse.data.rows[1].delta_pp, 0.0);
+    assert_eq!(reverse.data.rows[2].delta_pp, 0.01);
+}

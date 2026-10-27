@@ -1,7 +1,7 @@
 //! stdio MCP server: tool routing, input/output contracts, and response shaping.
 //!
 //! Tool entry points live in [`tools`]; input contracts in [`inputs`]; typed
-//! output envelopes and schemas in [`outputs`]; response tagging and text
+//! output envelopes in [`crate::output`]; response tagging and text
 //! fallbacks in [`respond`].
 
 use std::sync::Arc;
@@ -18,7 +18,6 @@ use rmcp::{
 };
 
 mod inputs;
-mod outputs;
 mod respond;
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
 //! Self/inclusive ranking of exact folded-frame identities.
 
-use crate::output::{FrameRow, ResponseBudget, TopData, TopOutput};
+use crate::output::{FrameRow, FrameTable, ResponseBudget, TopData, TopOutput};
 use hashbrown::HashMap;
 
 use super::{
@@ -238,8 +238,12 @@ pub fn top_with_workspace<'p>(
                 self_weight: stats.self_weight,
                 inclusive_weight: stats.inclusive_weight,
                 stack_count: stats.stack_count,
-                profile_percent: crate::output::percent(weight, profile.total_weight),
-                scope_percent: crate::output::percent(weight, scope_weight),
+                profile_percent: crate::output::display_percent(weight, profile.total_weight),
+                scope_percent: crate::output::scope_percent(
+                    weight,
+                    scope_weight,
+                    profile.total_weight,
+                ),
             })
         })
         .collect::<Result<_, ApiError>>()?;
@@ -251,7 +255,7 @@ pub fn top_with_workspace<'p>(
         TopData {
             metric,
             frame: frame_id,
-            rows,
+            rows: FrameTable::new(&rows),
         },
     ))
 }
@@ -345,20 +349,46 @@ mod tests {
                     assert!(actual.truncation_reasons.is_empty());
                 }
                 ids.truncate(3);
-                assert_eq!(
-                    actual
-                        .data
-                        .rows
+                let table = &actual.data.rows;
+                let column = |name: &str| {
+                    table
+                        .columns
                         .iter()
-                        .map(|row| row.frame_id)
+                        .position(|column| *column == name)
+                        .unwrap_or_else(|| panic!("missing column {name}"))
+                };
+                let (id, self_weight, inclusive, stacks) = (
+                    column("frame_id"),
+                    column("self_weight"),
+                    column("inclusive_weight"),
+                    column("stack_count"),
+                );
+                let rows = table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        (
+                            row[id].as_u64().unwrap() as u32,
+                            [row[self_weight].as_u64(), row[inclusive].as_u64()],
+                            row[stacks].as_u64().unwrap() as u32,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    rows.iter()
+                        .map(|(frame_id, _, _)| *frame_id)
                         .collect::<Vec<_>>(),
                     ids
                 );
-                for row in actual.data.rows {
-                    let stats = &expected[row.frame_id as usize];
+                for (frame_id, [own, inclusive], stacks) in rows {
+                    let stats = &expected[frame_id as usize];
                     assert_eq!(
-                        (row.self_weight, row.inclusive_weight, row.stack_count),
-                        (stats.self_weight, stats.inclusive_weight, stats.stack_count)
+                        (own, inclusive, stacks),
+                        (
+                            Some(stats.self_weight),
+                            Some(stats.inclusive_weight),
+                            stats.stack_count
+                        )
                     );
                 }
             }

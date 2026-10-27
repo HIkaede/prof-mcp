@@ -19,10 +19,14 @@ fn find_returns_frame_stats() {
                 "self_weight": 5,
                 "inclusive_weight": 55,
                 "stack_count": 3,
-                "profile_percent": 100.0,
-                "scope_percent": 100.0
+                "profile_percent": 100.0
             }]
         })
+    );
+    // A whole-profile scope repeats profile_percent, so it is left out.
+    assert!(
+        find["data"]["matches"][0].get("scope_percent").is_none(),
+        "scope_percent should be omitted when the scope is the whole profile"
     );
 }
 
@@ -55,7 +59,7 @@ fn focused_top_scope() {
     assert!(self_top["data"]["frame"].is_null());
     assert_eq!(
         self_top["data"]["rows"][0]["profile_percent"],
-        serde_json::json!(100.0 * 5.0 / 55.0)
+        serde_json::json!(9.09)
     );
 }
 
@@ -204,16 +208,15 @@ fn summary_shape() {
             .all(|warning| !warning.as_str().unwrap().contains("profile_"))
     );
     assert!(
-        warnings[1]
-            .as_str()
-            .unwrap()
-            .contains("count each stack once")
+        warnings
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("count each stack once"))
     );
     let missing =
         support::json(query::find_symbols(&profile, "absent", MatchMode::Contains, 20).unwrap());
     assert_eq!(
         missing["warnings"],
-        serde_json::json!(["No exact frame identities matched."])
+        serde_json::json!(["No frame name contains the query."])
     );
 }
 
@@ -347,12 +350,7 @@ fn regex_compiled_expansion_is_bounded_for_find_and_top() {
 
 #[test]
 fn summary_names_are_opaque() {
-    for name in [
-        "ordinary",
-        "[unknown]",
-        "[unknown@0x7] [/lib/a.so]",
-        "%5Bunknown%5D",
-    ] {
+    for name in ["ordinary", "[unknown]", "%5Bunknown%5D"] {
         let profile = support::profile(&format!("root;{name} 7\n"));
         let summary = support::json(query::summary(&profile).unwrap());
         let data = &summary["data"];
@@ -362,5 +360,33 @@ fn summary_names_are_opaque() {
         assert_eq!(data["top_self"][0]["name"], name);
         assert_eq!(data["top_self"][0]["self_weight"], 7);
         assert_eq!(summary["warnings"].as_array().unwrap().len(), 1);
+        assert_eq!(data["symbol_coverage"]["unresolved_frames"], 0);
+        assert_eq!(data["symbol_coverage"]["frame_count"], 2);
+        assert_eq!(data["symbol_coverage"]["unresolved_self_percent"], 0.0);
     }
+}
+
+#[test]
+fn summary_reports_unresolved_symbols() {
+    let profile = support::profile("root;[unknown@0x7] [/lib/a.so] 7\nroot;main 3\n");
+    let summary = support::json(query::summary(&profile).unwrap());
+    let coverage = &summary["data"]["symbol_coverage"];
+    assert_eq!(coverage["unresolved_frames"], 1);
+    assert_eq!(coverage["frame_count"], 3);
+    assert_eq!(coverage["unresolved_self_percent"], 70.0);
+    assert_eq!(summary["warnings"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn five_percent_unresolved_weight_has_no_coverage_judgment() {
+    let profile = support::profile("root;[unknown@0x7] [/lib/a.so] 5\nroot;main 95\n");
+    let summary = support::json(query::summary(&profile).unwrap());
+    assert_eq!(
+        summary["data"]["symbol_coverage"]["unresolved_self_percent"],
+        5.0
+    );
+    assert_eq!(
+        summary["warnings"],
+        serde_json::json!(["Weight unit is opaque; it is not assumed to be time or cycles."])
+    );
 }

@@ -2,6 +2,29 @@ use crate::support;
 use prof_mcp::query;
 
 #[test]
+fn continuation_page_is_capped_and_resumable() {
+    // 40 equally weighted roots: every one is truncated, so the cap binds.
+    let input: String = (0..40).map(|i| format!("frame{i} 1\n")).collect();
+    let profile = support::profile(&input);
+    let page = support::json(query::tree(&profile, [0, 0], None, 0, 40, 0.0).unwrap());
+    let continuations = page["data"]["continuations"].as_array().unwrap();
+    assert_eq!(continuations.len(), 16);
+    assert_eq!(page["data"]["continuation_limit"], 16);
+    assert_eq!(page["data"]["continuations_available"], 40);
+    assert_eq!(page["data"]["continuations_omitted"], 24);
+    // Every returned cursor still resumes to the node it advertises.
+    for continuation in continuations {
+        let cursor: [u32; 2] = serde_json::from_value(continuation["node_id"].clone()).unwrap();
+        let resumed =
+            query::tree(&profile, cursor, Some(profile.fingerprint()), 0, 40, 0.0).unwrap();
+        assert_eq!(
+            resumed.data.root.nodes().name,
+            Some(continuation["name"].as_str().unwrap())
+        );
+    }
+}
+
+#[test]
 fn tree_pruning_and_continuations() {
     let profile = support::profile("A 5\nB 4\nC 1\n");
     let one = support::json(query::tree(&profile, [0, 0], None, 0, 1, 0.0).unwrap());
@@ -86,7 +109,10 @@ fn compressed_labels_preserve_logical_budgets_and_continuations() {
     let page = support::json(query::tree(&profile, [0, 0], None, 1, 2, 0.0).unwrap());
     let a = &page["data"]["root"]["children"][0];
     assert_eq!(a["name"], "a");
-    assert_eq!(a["self_weight"], 0);
+    assert!(
+        a.get("self_weight").is_none(),
+        "a zero self weight is omitted"
+    );
     assert_eq!(a["total_weight"], 12);
     assert_eq!(a["omitted_children"], 1);
     assert_eq!(a["omitted_weight"], 12);
@@ -95,9 +121,9 @@ fn compressed_labels_preserve_logical_budgets_and_continuations() {
     assert_eq!(id[1], 1);
     assert_eq!(continuation["name"], "b");
     let resumed = query::tree(&profile, id, Some(profile.fingerprint()), 1, 3, 0.0).unwrap();
-    assert_eq!(resumed.data.root.name, Some("b"));
-    assert_eq!(resumed.data.root.children[0].name, Some("d"));
-    assert_eq!(resumed.data.root.children[1].name, Some("c"));
+    assert_eq!(resumed.data.root.nodes().name, Some("b"));
+    assert_eq!(resumed.data.root.nodes().children[0].name, Some("d"));
+    assert_eq!(resumed.data.root.nodes().children[1].name, Some("c"));
     for invalid in [[0, 1], [id[0], 2], [u32::MAX, 0]] {
         assert_eq!(
             query::tree(&profile, invalid, Some(profile.fingerprint()), 1, 3, 0.0)
@@ -118,7 +144,7 @@ fn compressed_labels_preserve_logical_budgets_and_continuations() {
 fn compressed_tree_keeps_terminal_prefixes_and_first_frame_ties() {
     let profile = support::profile("a;b;c 5\na 3\nd;e;z 5\nx;y;a 5\n");
     let full = query::tree(&profile, [0, 0], None, 8, 32, 0.0).unwrap();
-    let root = &full.data.root;
+    let root = full.data.root.nodes();
     assert_eq!(
         root.children
             .iter()

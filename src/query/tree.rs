@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use crate::output::{
-    Continuation, ContinuationTool, TreeContinuation, TreeData, TreeNode, TreeOutput,
+    Continuation, ContinuationTool, TreeBody, TreeContinuation, TreeData, TreeNode, TreeOutput,
 };
 use serde_json::json;
 
 use super::{
-    ApiError, Profile, RenderState, TreeTruncation, check_budget, envelope, percent,
-    tree_reason_values,
+    ApiError, CONTINUATION_LIMIT, Profile, RenderState, TreeTruncation, check_budget,
+    display_percent, envelope, percent, scope_percent, tree_reason_values,
 };
 
 pub fn tree<'p>(
@@ -84,9 +84,9 @@ pub fn tree<'p>(
         truncation_reasons,
         Vec::new(),
         TreeData {
-            root: node,
+            root: TreeBody::Nodes(node),
             continuations_truncated,
-            continuation_limit: 128,
+            continuation_limit: CONTINUATION_LIMIT,
             continuations_available: continuation_count,
             continuations_omitted: continuation_count.saturating_sub(continuations.len()),
             continuations,
@@ -108,7 +108,8 @@ fn render_cct<'p>(
         Some(profile.stacks.frames[(node.label_offset + node_id[1]) as usize])
     };
     if let Some(id) = frame {
-        state.bytes.row_name(profile.frame_name(id))?;
+        // Bound names here; the final response check accounts for the chosen format.
+        state.bytes.json(&profile.frame_name(id))?;
     }
     let next = [node_id[0], node_id[1] + 1];
     let virtual_child = node_id[0] != profile.cct.root && next[1] < node.label_len;
@@ -146,7 +147,7 @@ fn render_cct<'p>(
             truncated = true;
             if state.continuations.len() < state.continuation_limit {
                 let frame_id = profile.stacks.frames[(child.label_offset + child_id[1]) as usize];
-                state.bytes.row_name(profile.frame_name(frame_id))?;
+                state.bytes.json(&profile.frame_name(frame_id))?;
                 state.bytes.json(&profile.source.fingerprint)?;
                 state.continuations.push(TreeContinuation {
                     node_id: child_id,
@@ -160,8 +161,12 @@ fn render_cct<'p>(
                         cursor: child_id.to_vec(),
                     },
                     total_weight: child.total_weight,
-                    profile_percent: percent(child.total_weight, profile.total_weight),
-                    scope_percent: percent(child.total_weight, state.scope),
+                    profile_percent: display_percent(child.total_weight, profile.total_weight),
+                    scope_percent: scope_percent(
+                        child.total_weight,
+                        state.scope,
+                        profile.total_weight,
+                    ),
                 });
             }
         } else {
@@ -178,8 +183,8 @@ fn render_cct<'p>(
             name,
             self_weight,
             total_weight: node.total_weight,
-            profile_percent: percent(node.total_weight, profile.total_weight),
-            scope_percent: percent(node.total_weight, state.scope),
+            profile_percent: display_percent(node.total_weight, profile.total_weight),
+            scope_percent: scope_percent(node.total_weight, state.scope, profile.total_weight),
             omitted_children: omitted_count,
             omitted_weight,
             children: rendered,

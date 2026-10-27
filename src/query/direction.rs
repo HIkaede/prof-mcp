@@ -9,8 +9,9 @@ use hashbrown::HashMap;
 use serde_json::json;
 
 use super::{
-    ApiError, FrameId, FrameSelector, Profile, RenderState, TreeTruncation, check_budget, envelope,
-    frame_row_with_percent_weight, percent, resolve_selector, tree_reason_values,
+    ApiError, CONTINUATION_LIMIT, FrameId, FrameSelector, FrameStats, Profile, RenderState,
+    TreeTruncation, check_budget, display_percent, envelope, frame_row_with_percent_weight,
+    percent, resolve_selector, scope_percent, tree_reason_values,
 };
 
 /// Cursor ids the server accepts: `[anchor] + path + [child]`. Longer paths
@@ -131,9 +132,11 @@ fn directional<'p>(
     };
     let mut filtered = Vec::new();
     let mut partial = false;
+    let mut frame_stats = profile.frame_stats[frame as usize].clone();
     let scope = if prefix.is_empty() {
-        profile.frame_stats[frame as usize].inclusive_weight
+        frame_stats.inclusive_weight
     } else {
+        frame_stats = FrameStats::default();
         let mut scope = 0;
         for rank in 0..walk.ranked.len() {
             let matches = prefix
@@ -141,7 +144,12 @@ fn directional<'p>(
                 .enumerate()
                 .all(|(offset, &id)| walk.next(rank as u32, offset).0 == Some(id));
             if matches {
-                scope += profile.stacks.stack(walk.ranked[rank]).weight;
+                let stack = profile.stacks.stack(walk.ranked[rank]);
+                scope += stack.weight;
+                frame_stats.stack_count += 1;
+                if stack.frames.last() == Some(&frame) {
+                    frame_stats.self_weight += stack.weight;
+                }
                 if partial {
                     filtered.push(rank as u32);
                 }
@@ -150,6 +158,7 @@ fn directional<'p>(
                 partial = true;
             }
         }
+        frame_stats.inclusive_weight = scope;
         scope
     };
     if scope == 0 {
@@ -202,22 +211,10 @@ fn directional<'p>(
         truncation_reasons,
         Vec::new(),
         DirectionData {
-            // Every row in this response is scoped to the page, so the anchor row is
-            // too: inside the page its inclusive weight is the whole page weight.
-            frame: {
-                let mut row = frame_row_with_percent_weight(
-                    profile,
-                    frame,
-                    &profile.frame_stats[frame as usize],
-                    scope,
-                    scope,
-                );
-                row.inclusive_weight = scope;
-                row
-            },
+            frame: frame_row_with_percent_weight(profile, frame, &frame_stats, scope, scope),
             root: node,
             continuations_truncated: continuation_count > continuations.len(),
-            continuation_limit: 128,
+            continuation_limit: CONTINUATION_LIMIT,
             continuations_available: continuation_count,
             continuations_omitted: continuation_count.saturating_sub(continuations.len()),
             continuations,
@@ -458,8 +455,12 @@ impl<'p> Walk<'p> {
                         cursor,
                     },
                     total_weight: child.weight,
-                    profile_percent: percent(child.weight, self.profile.total_weight),
-                    scope_percent: percent(child.weight, state.scope),
+                    profile_percent: display_percent(child.weight, self.profile.total_weight),
+                    scope_percent: scope_percent(
+                        child.weight,
+                        state.scope,
+                        self.profile.total_weight,
+                    ),
                 });
             } else {
                 // A deep cursor can cost more than the response allows; drop it and
@@ -512,8 +513,8 @@ impl<'p> Walk<'p> {
             name: Some(self.profile.frame_name(node.frame)),
             self_weight: if terminal { node.weight } else { 0 },
             total_weight: node.weight,
-            profile_percent: percent(node.weight, self.profile.total_weight),
-            scope_percent: percent(node.weight, state.scope),
+            profile_percent: display_percent(node.weight, self.profile.total_weight),
+            scope_percent: scope_percent(node.weight, state.scope, self.profile.total_weight),
             omitted_children: 0,
             omitted_weight: 0,
             children: Vec::new(),

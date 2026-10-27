@@ -121,6 +121,27 @@ async fn discover_live_registration() {
     .await;
 }
 
+/// Read a columnar table (`{columns, rows}`) as one object per row, so a test
+/// can name fields without depending on column order alone.
+fn table_rows(table: &serde_json::Value) -> Vec<serde_json::Value> {
+    let columns = table["columns"].as_array().expect("table columns");
+    table["rows"]
+        .as_array()
+        .expect("table rows")
+        .iter()
+        .map(|row| {
+            let cells = row.as_array().expect("table row");
+            columns
+                .iter()
+                .filter_map(|column| column.as_str())
+                .map(str::to_owned)
+                .zip(cells.iter().cloned())
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        })
+        .collect()
+}
+
 #[path = "mcp/contracts.rs"]
 mod contracts;
 #[path = "mcp/responses.rs"]

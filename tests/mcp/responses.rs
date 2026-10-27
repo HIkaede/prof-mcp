@@ -1,4 +1,4 @@
-use super::{check, sample};
+use super::{check, sample, table_rows};
 use prof_mcp::registry;
 use rmcp::model::CallToolRequestParams;
 use serde::Deserialize;
@@ -38,11 +38,18 @@ struct FrameRow {
     name: String,
 }
 
+/// Ranked rows travel as a columnar table: the field names appear once.
+#[derive(Deserialize)]
+struct Table {
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+}
+
 #[derive(Deserialize)]
 struct TopData {
     metric: String,
     frame: Option<u32>,
-    rows: Vec<FrameRow>,
+    rows: Table,
 }
 
 #[allow(dead_code)]
@@ -136,7 +143,7 @@ async fn responses_have_no_next_steps() {
             assert_eq!(response.is_error, Some(false), "{name}");
             let value = response.structured_content.as_ref().unwrap();
             assert!(value.get("next_steps").is_none(), "{name}");
-            assert_eq!(value["schema_version"], "2");
+            assert_eq!(value["schema_version"], "3");
             let text = &response.content[0].as_text().unwrap().text;
             assert!(
                 text.starts_with("profile=sample; truncated="),
@@ -159,6 +166,87 @@ async fn responses_have_no_next_steps() {
 }
 
 #[tokio::test]
+async fn tree_text_format_renders_one_line_per_node() {
+    sample(async |client| {
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("profile_tree").with_arguments(
+                    serde_json::json!({"format":"text"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let value = result.structured_content.unwrap();
+        let tree = value["data"]["root"]
+            .as_str()
+            .expect("text format replaces the nested nodes with lines");
+        let lines = tree.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3, "{tree}");
+        assert!(lines[0].starts_with("root#"), "{tree}");
+        assert!(lines[1].starts_with("  A#"), "{tree}");
+        assert!(
+            lines[2].starts_with("    B#") && lines[2].contains("total=2"),
+            "{tree}"
+        );
+        // The one-line summary in `content` still names the same root.
+        assert!(
+            result.content[0]
+                .as_text()
+                .unwrap()
+                .text
+                .contains("tree_root=root")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn scope_percent_column_appears_only_for_a_narrower_scope() {
+    sample(async |client| {
+        let plain = client
+            .call_tool(
+                CallToolRequestParams::new("profile_top")
+                    .with_arguments(serde_json::json!({}).as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        let columns = plain.structured_content.unwrap()["data"]["rows"]["columns"].clone();
+        assert!(
+            !columns
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("scope_percent")),
+            "{columns}"
+        );
+        let focused = client
+            .call_tool(
+                CallToolRequestParams::new("profile_top").with_arguments(
+                    serde_json::json!({"frame":{"frame_name":"B"}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        let value = focused.structured_content.unwrap();
+        assert!(
+            value["data"]["rows"]["columns"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("scope_percent"))
+        );
+        let rows = table_rows(&value["data"]["rows"]);
+        assert_eq!(rows[0]["scope_percent"], 100.0);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn summary_metadata_and_text() {
     sample(async |client| {
         let result = client
@@ -172,7 +260,7 @@ async fn summary_metadata_and_text() {
         assert!(result.structured_content.is_some());
         assert_eq!(
             result.structured_content.as_ref().unwrap()["schema_version"],
-            "2"
+            "3"
         );
         assert!(
             result.content[0]
@@ -236,16 +324,31 @@ async fn deserialize_tool_responses() {
                 "profile_top" => {
                     assert!(structured["data"].get("grouped_rows").is_none());
                     let typed: TypedEnvelope<TopData> = serde_json::from_value(structured).unwrap();
-                    assert_eq!(typed.schema_version, "2");
+                    assert_eq!(typed.schema_version, "3");
                     assert_eq!(typed.data.metric, "self");
                     assert_eq!(typed.data.frame, None);
-                    assert!(!typed.data.rows.is_empty());
-                    assert!(!typed.data.rows[0].name.is_empty());
+                    assert_eq!(
+                        typed.data.rows.columns,
+                        [
+                            "frame_id",
+                            "name",
+                            "self_weight",
+                            "inclusive_weight",
+                            "stack_count",
+                            "profile_percent"
+                        ]
+                    );
+                    assert!(!typed.data.rows.rows.is_empty());
+                    assert!(
+                        typed.data.rows.rows[0][1]
+                            .as_str()
+                            .is_some_and(|name| !name.is_empty())
+                    );
                 }
                 "profile_tree" => {
                     let typed: TypedEnvelope<TreeData> =
                         serde_json::from_value(structured).unwrap();
-                    assert_eq!(typed.schema_version, "2");
+                    assert_eq!(typed.schema_version, "3");
                     assert_eq!(typed.data.root.node_id, Some([0, 0]));
                 }
                 "profile_callers" | "profile_callees" => {
@@ -261,7 +364,7 @@ async fn deserialize_tool_responses() {
                     assert_eq!(typed.data.rows[0].delta_pp, 0.0);
                 }
                 "profile_find_symbols" => {
-                    let matches = structured["data"]["matches"].as_array().unwrap();
+                    let matches = table_rows(&structured["data"]["matches"]);
                     assert_eq!(matches.len(), 1);
                     assert_eq!(matches[0]["name"], "A");
                     assert_eq!(matches[0]["self_weight"], 3);
@@ -324,7 +427,7 @@ async fn truncated_path_positions() {
             .unwrap();
         assert_eq!(windowed.is_error, Some(false));
         let windowed = windowed.structured_content.unwrap();
-        assert_eq!(windowed["schema_version"], "2");
+        assert_eq!(windowed["schema_version"], "3");
         assert!(windowed["truncated"].as_bool().unwrap());
         assert_eq!(
             windowed["data"]["paths"][0]["target_positions"],
@@ -490,7 +593,7 @@ async fn diff_raw_weights() {
         assert_eq!(response.is_error, Some(false));
         let typed: TypedEnvelope<DiffData> =
             serde_json::from_value(response.structured_content.unwrap()).unwrap();
-        assert_eq!(typed.schema_version, "2");
+        assert_eq!(typed.schema_version, "3");
         assert!(!typed.truncated);
         assert!(typed.truncation_reasons.is_empty());
         let hot = typed
@@ -887,7 +990,7 @@ async fn oversized_responses_are_structured_errors() {
             .unwrap();
         assert_eq!(small.is_error, Some(false));
         assert_eq!(
-            small.structured_content.unwrap()["data"]["matches"][0]["name"],
+            table_rows(&small.structured_content.unwrap()["data"]["matches"])[0]["name"],
             "root"
         );
     })
@@ -932,4 +1035,39 @@ async fn structured_errors_survive_tool_discovery() {
         }
     })
     .await;
+}
+
+#[tokio::test]
+async fn text_tree_uses_the_encoded_response_budget() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("wide.folded");
+    for name_bytes in [90, 130] {
+        let input = (0..430)
+            .map(|index| format!("f{index:03}_{} 1\n", "x".repeat(name_bytes - 5)))
+            .collect::<String>();
+        std::fs::write(&source, input).unwrap();
+        registry::register(root.path(), &source, Some("wide"), 1024 * 1024).unwrap();
+        check(root.path(), true, async |client| {
+            for format in ["text", "json"] {
+                let response = client.call_tool(
+                    CallToolRequestParams::new("profile_tree").with_arguments(
+                        serde_json::json!({"format": format, "max_nodes": 512, "min_scope_percent": 0})
+                            .as_object().unwrap().clone()
+                    )
+                ).await.unwrap();
+                let oversized = name_bytes == 130 || format == "json";
+                assert_eq!(response.is_error, Some(oversized), "{name_bytes}, {format}");
+                assert!(serde_json::to_vec(&response).unwrap().len() <= 64 * 1024);
+                if oversized {
+                    let error: serde_json::Value = serde_json::from_str(
+                        &response.content[0].as_text().unwrap().text).unwrap();
+                    assert_eq!(error["code"], "query_too_large");
+                } else {
+                    let value = response.structured_content.unwrap();
+                    assert!(!value["truncated"].as_bool().unwrap());
+                    assert_eq!(value["data"]["root"].as_str().unwrap().lines().count(), 430);
+                }
+            }
+        }).await;
+    }
 }
