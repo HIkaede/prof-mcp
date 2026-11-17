@@ -2,7 +2,7 @@
 name = "prof-mcp"
 version = "0.6.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.100"
 description = "Read-only MCP queries for folded stack profiles"
 license = "MIT"
 
@@ -19,9 +19,9 @@ anyhow = "1"
 blake3 = "1"
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 hashbrown = "0.17"
-lru = "0.18"
+lru = "0.19"
 regex = "1"
-rmcp = { version = "3.5.1", default-features = false, features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.10.0", default-features = false, features = ["server", "macros", "transport-io"] }
 tempfile = "3"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["e
 [dev-dependencies]
 # Integration tests drive a full MCP client against the server; the shipped
 # binary itself only needs the server half.
-rmcp = { version = "3.5.1", default-features = false, features = ["client"] }
+rmcp = { version = "3.10.0", default-features = false, features = ["client"] }
 
 [profile.dev]
 debug = 1
