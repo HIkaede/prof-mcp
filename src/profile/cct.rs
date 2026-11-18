@@ -7,6 +7,7 @@ struct PendingNode {
     node: ContextNode,
     parent: u32,
     depth: u32,
+    stack_range: [u32; 2],
 }
 
 fn offset_overflow() -> ApiError {
@@ -35,6 +36,7 @@ pub(crate) fn build_cct(
         },
         parent: 0,
         depth: 0,
+        stack_range: [0, 0],
     }];
     let mut active = vec![0usize];
     let mut previous = &[][..];
@@ -49,6 +51,7 @@ pub(crate) fn build_cct(
         while nodes[*active.last().unwrap()].depth as usize > common {
             let id = active.pop().unwrap();
             nodes[id].node.total_weight = completed_weight - nodes[id].node.total_weight;
+            nodes[id].stack_range[1] = compact(sid)?;
             last_closed = Some(id);
         }
         let mut parent = *active.last().unwrap();
@@ -64,6 +67,7 @@ pub(crate) fn build_cct(
                 },
                 parent: compact(parent)?,
                 depth: compact(common)?,
+                stack_range: [nodes[child].stack_range[0], 0],
             });
             nodes[child].parent = compact(branch)?;
             nodes[child].node.label_offset = nodes[child]
@@ -86,6 +90,7 @@ pub(crate) fn build_cct(
             },
             parent: compact(parent)?,
             depth: compact(stack.frames.len())?,
+            stack_range: [compact(sid)?, 0],
         });
         active.push(id);
         completed_weight = completed_weight
@@ -96,6 +101,7 @@ pub(crate) fn build_cct(
     while active.len() > 1 {
         let id = active.pop().unwrap();
         nodes[id].node.total_weight = completed_weight - nodes[id].node.total_weight;
+        nodes[id].stack_range[1] = compact(stacks.len())?;
     }
     debug_assert_eq!(completed_weight, total_weight);
     let mut offsets = vec![0u32; nodes.len() + 1];
@@ -129,6 +135,7 @@ pub(crate) fn build_cct(
                 .then(a.cmp(b))
         });
     }
+    let stack_ranges = nodes[1..].iter().map(|node| node.stack_range).collect();
     Ok(ContextCallTree {
         nodes: nodes
             .into_iter()
@@ -137,6 +144,7 @@ pub(crate) fn build_cct(
             .into_boxed_slice(),
         child_offsets: offsets.into_boxed_slice(),
         children: children.into_boxed_slice(),
+        stack_ranges,
         root: 0,
     })
 }

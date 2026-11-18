@@ -2,8 +2,8 @@
 
 use crate::error::ApiError;
 use crate::output::{
-    RecursionRow, RegistryOutput, ResponseBudget, StackConcentration, SummaryData, SummaryOutput,
-    SymbolCoverage,
+    FoldedCapabilities, FoldedQuality, RecursionRow, RegistryOutput, ResponseBudget,
+    StackConcentration, SummaryData, SummaryOutput, SymbolCoverage,
 };
 
 use super::{
@@ -75,6 +75,31 @@ pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> 
         warnings,
         SummaryData {
             total_weight: profile.total_weight,
+            snapshot_id: profile.snapshot_id(),
+            capabilities: FoldedCapabilities {
+                storage: "folded_aggregate",
+                metric: "opaque_weight",
+                retained_dimensions: &["ordered_frame_labels", "stack_weight"],
+                queryable_dimensions: &["frame", "context", "stack"],
+                unavailable: &[
+                    "timestamp",
+                    "thread",
+                    "cpu",
+                    "sample_count",
+                    "sample_period",
+                    "call_count",
+                    "off_cpu_duration",
+                    "request_latency",
+                ],
+            },
+            quality: FoldedQuality {
+                lost_samples: None,
+                lost_records: None,
+                known_truncated_weight: None,
+                unwind_failed_weight: None,
+                source_dimensions: None,
+                discarded_dimensions: None,
+            },
             frame_count: profile.frames.len(),
             unique_stack_count: profile.stacks.len(),
             max_depth: profile.max_depth,
@@ -93,22 +118,54 @@ pub fn summary<'p>(profile: &'p Profile) -> Result<SummaryOutput<'p>, ApiError> 
     ))
 }
 
-/// Frames perf could not resolve to a symbol, weighted by self time. Inclusive
-/// weights would double count, and overlapping contexts already exceed 100%.
-fn symbol_coverage(profile: &Profile) -> SymbolCoverage {
-    let mut unresolved_frames = 0;
-    let mut unresolved_self = 0_u64;
-    for index in 0..profile.frames.len() {
-        if !profile.frame_name(index as u32).starts_with("[unknown@") {
-            continue;
-        }
-        unresolved_frames += 1;
-        unresolved_self = unresolved_self.saturating_add(profile.frame_stats[index].self_weight);
+/// Recognize the generic marker and the capture adapter's unresolved PC syntax.
+fn unknown_label(label: &str) -> bool {
+    if !label.starts_with("[unknown") {
+        return false;
     }
+    let name = match label.split_once(" [") {
+        Some((name, module)) if module.ends_with(']') && module.len() > 1 => name,
+        _ => label,
+    };
+    name == "[unknown]"
+        || name
+            .strip_prefix("[unknown@0x")
+            .and_then(|pc| pc.strip_suffix(']'))
+            .is_some_and(|pc| !pc.is_empty() && pc.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn symbol_coverage(profile: &Profile) -> SymbolCoverage {
+    let &(unresolved_frames, unresolved_self, covered) =
+        profile.unknown_coverage.get_or_init(|| {
+            let mut unresolved_frames = 0;
+            let mut unresolved_self = 0;
+            let mut covered = 0;
+            for (i, name) in profile.frames.iter().enumerate() {
+                if unknown_label(name) {
+                    unresolved_frames += 1;
+                    unresolved_self += profile.frame_stats[i].self_weight;
+                    covered = profile.frame_stats[i].inclusive_weight;
+                }
+            }
+            if unresolved_frames > 1 {
+                let unresolved: Vec<_> = profile.frames.iter().map(unknown_label).collect();
+                covered = profile
+                    .stacks
+                    .iter()
+                    .filter(|stack| stack.frames.iter().any(|&id| unresolved[id as usize]))
+                    .map(|stack| stack.weight)
+                    .sum();
+            }
+            (unresolved_frames, unresolved_self, covered)
+        });
     SymbolCoverage {
         unresolved_frames,
         frame_count: profile.frames.len(),
+        unresolved_self_weight: unresolved_self,
         unresolved_self_percent: display_percent(unresolved_self, profile.total_weight),
+        unresolved_stack_weight: covered,
+        unresolved_stack_percent: (profile.total_weight > 0)
+            .then(|| display_percent(covered, profile.total_weight)),
     }
 }
 

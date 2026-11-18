@@ -30,7 +30,7 @@ fn register_and_deduplicate() {
         &fs::read(workspace.path().join(".prof-mcp/manifest.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(manifest.active, "candidate");
+    assert_eq!(manifest.active, "first");
     assert_eq!(manifest.profiles.len(), 2);
     assert_eq!(manifest.profiles["candidate"].source_name, "first.folded");
     assert_eq!(manifest.schema_version, 2);
@@ -60,13 +60,13 @@ fn register_and_deduplicate() {
     );
     assert_ne!(replacement.fingerprint, first.fingerprint);
     let status = registry::status(workspace.path()).unwrap();
-    assert_eq!(status.active, "candidate");
+    assert_eq!(status.active, "first");
     assert_eq!(status.profiles.len(), 2);
-    let switched = registry::set_active(workspace.path(), "first").unwrap();
-    assert_eq!(switched.active, "first");
+    let switched = registry::set_active(workspace.path(), "candidate").unwrap();
+    assert_eq!(switched.active, "candidate");
     assert_eq!(
         registry::resolve(workspace.path(), None).unwrap().alias,
-        "first"
+        "candidate"
     );
     assert_eq!(
         registry::set_active(workspace.path(), "missing")
@@ -329,7 +329,9 @@ fn reject_invalid_manifests() {
     fs::write(&manifest_path, valid_manifest).unwrap();
     registry::register(workspace.path(), &failed_source, Some("new"), 1024).unwrap();
     assert_eq!(
-        registry::resolve(workspace.path(), None).unwrap().alias,
+        registry::resolve(workspace.path(), Some("new"))
+            .unwrap()
+            .alias,
         "new"
     );
 }
@@ -506,7 +508,7 @@ fn remove_alias_preserves_blob() {
     let first = registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
 
-    let removal = registry::remove(workspace.path(), "base", None).unwrap();
+    let removal = registry::remove(workspace.path(), "base", Some("candidate")).unwrap();
     assert_eq!(removal.alias, "base");
     assert_eq!(removal.active, "candidate");
     assert_eq!(
@@ -542,6 +544,7 @@ fn validate_active_alias_removal() {
 
     fs::write(&source, "root;B 2\n").unwrap();
     registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+    registry::set_active(workspace.path(), "candidate").unwrap();
     assert_eq!(
         registry::remove(workspace.path(), "candidate", None)
             .unwrap_err()
@@ -723,7 +726,11 @@ fn persistence_failure_is_atomic() {
         1024,
     )
     .unwrap();
-    assert_eq!(registry::resolve(root.path(), None).unwrap().alias, "new");
+    assert_eq!(
+        registry::resolve(root.path(), Some("new")).unwrap().alias,
+        "new"
+    );
+    assert_eq!(registry::resolve(root.path(), None).unwrap().alias, "base");
 }
 
 #[test]

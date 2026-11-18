@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Debug, Parser)]
 #[command(
@@ -27,6 +27,30 @@ pub enum Command {
         /// Maximum estimated memory (MiB) retained by the profile cache; 0 disables caching.
         #[arg(long, default_value_t = 512)]
         max_cache_mib: u64,
+        /// MCP tools to advertise and serve.
+        #[arg(long, value_enum, default_value = "legacy")]
+        toolset: Toolset,
+        /// Deliver full tool evidence as structured data or compact JSON text.
+        #[arg(long, value_enum, default_value = "structured")]
+        output_format: OutputFormat,
+    },
+    /// Run read-only experimental tool requests from stdin.
+    Query {
+        /// Read one {tool, arguments} JSON request per line and emit one JSON response per line.
+        #[arg(long, required = true)]
+        jsonl: bool,
+    },
+    /// Import perf.data into an experimental sample snapshot outside the registry.
+    ImportSamples {
+        #[arg(value_name = "PERF_DATA")]
+        input: std::path::PathBuf,
+        #[arg(value_name = "SAMPLE_SNAPSHOT")]
+        output: std::path::PathBuf,
+    },
+    /// Query an experimental sample snapshot with one JSON request from stdin.
+    QuerySamples {
+        #[arg(value_name = "SAMPLE_SNAPSHOT")]
+        input: std::path::PathBuf,
     },
     /// Validate and register one profile artifact in the current workspace.
     Register {
@@ -67,6 +91,20 @@ pub enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum Toolset {
+    #[default]
+    Legacy,
+    Experimental,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    #[default]
+    Structured,
+    Text,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub max_file_size_mib: u64,
@@ -76,7 +114,7 @@ pub struct Config {
 impl From<&Cli> for Config {
     fn from(cli: &Cli) -> Self {
         let max_cache_mib = match cli.command.as_ref() {
-            Some(Command::Serve { max_cache_mib }) => *max_cache_mib,
+            Some(Command::Serve { max_cache_mib, .. }) => *max_cache_mib,
             _ => 512,
         };
         Self {

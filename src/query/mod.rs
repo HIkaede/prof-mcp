@@ -17,9 +17,12 @@ pub(crate) use crate::output::{
 };
 pub(crate) use crate::profile::{FrameId, FrameStats, Profile};
 
+pub mod comparison;
 mod diff;
 mod direction;
+pub mod engine;
 mod paths;
+pub mod selection;
 mod summary;
 mod symbols;
 mod top;
@@ -69,6 +72,38 @@ pub enum FrameWindow {
 
 pub const DEFAULT_MAX_TOTAL_FRAMES: usize = 500;
 pub const MAX_TOTAL_FRAMES: usize = 5_000;
+
+#[derive(Clone, Copy, Default)]
+pub struct Cancellation<'a> {
+    is_cancelled: Option<&'a dyn Fn() -> bool>,
+}
+
+impl<'a> Cancellation<'a> {
+    pub fn new(is_cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self {
+            is_cancelled: Some(is_cancelled),
+        }
+    }
+
+    pub fn check(self) -> Result<(), ApiError> {
+        if self.is_cancelled.is_some_and(|is_cancelled| is_cancelled()) {
+            return Err(ApiError::new(
+                "query_cancelled",
+                "The query was cancelled",
+                json!({}),
+                "Rerun the query if the result is still needed.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn checkpoint(self, iteration: usize) -> Result<(), ApiError> {
+        if iteration.is_multiple_of(1024) {
+            self.check()?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) fn resolve_selector(
     profile: &Profile,

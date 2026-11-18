@@ -5,9 +5,7 @@ use crate::profile::{FrameId, FrameStats, Profile};
 
 mod budget;
 mod types;
-#[cfg(test)]
-pub(crate) use budget::MAX_RESPONSE_BYTES;
-pub(crate) use budget::{ResponseBudget, response_too_large};
+pub(crate) use budget::{MAX_RESPONSE_BYTES, ResponseBudget, response_too_large};
 pub use types::*;
 
 pub const SCHEMA_VERSION: &str = "3";

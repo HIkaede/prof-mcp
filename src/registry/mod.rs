@@ -32,8 +32,8 @@ use layout::{
 };
 use lock::RegistrationLock;
 use manifest::{
-    atomic_write_json, read_manifest_optional, read_manifest_required, valid_source_name,
-    validate_manifest,
+    atomic_write_json, read_manifest_optional, read_manifest_required, valid_fingerprint,
+    valid_source_name, validate_manifest,
 };
 use persist::{atomic_copy, files_equal, sync_directory};
 
@@ -198,7 +198,6 @@ pub fn register_reader(
         .profiles
         .get(&alias)
         .is_some_and(|profile| profile.fingerprint != fingerprint);
-    manifest.active = alias.clone();
     manifest.profiles.insert(
         alias.clone(),
         ManifestProfile {
@@ -302,6 +301,72 @@ fn read_workspace_manifest(workspace: &Path) -> Result<(PathBuf, Manifest), ApiE
 pub fn resolve(workspace: &Path, requested: Option<&str>) -> Result<ResolvedProfile, ApiError> {
     let (state, manifest) = read_workspace_manifest(workspace)?;
     resolve_manifest(&state, &manifest, requested)
+}
+
+pub(crate) fn snapshot_unavailable(snapshot_id: &str) -> ApiError {
+    ApiError::new(
+        "snapshot_unavailable",
+        "Referenced snapshot is unavailable in this workspace",
+        json!({"snapshot_id":snapshot_id}),
+        "Start a new query from a registered profile or restore the referenced input.",
+    )
+}
+
+pub(crate) fn resolve_snapshot_blob(
+    workspace: &Path,
+    fingerprint: &str,
+    snapshot_id: &str,
+) -> Result<ResolvedProfile, ApiError> {
+    if !valid_fingerprint(fingerprint) {
+        return Err(ApiError::new(
+            "invalid_selection",
+            "Selection source digest must be 64 lowercase hexadecimal digits",
+            json!({}),
+            "Copy the selection object returned by a query.",
+        ));
+    }
+    let (state, manifest) = read_workspace_manifest(workspace).map_err(|error| {
+        if error.code == "workspace_not_registered" {
+            snapshot_unavailable(snapshot_id)
+        } else {
+            error
+        }
+    })?;
+    ensure_profiles_dir(&state, false)?;
+    let file = profile_file(fingerprint);
+    let path = state.join(&file);
+    let metadata = fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            snapshot_unavailable(snapshot_id)
+        } else {
+            registry_io(&path, error)
+        }
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(corrupt(
+            "Snapshot blob is not a regular file",
+            json!({"file":file}),
+        ));
+    }
+    // A content-addressed blob remains available after its alias is rebound until GC.
+    let matching = manifest
+        .profiles
+        .iter()
+        .find(|(_, entry)| entry.fingerprint == fingerprint);
+    if let Some((_, entry)) = matching
+        && metadata.len() != entry.byte_len
+    {
+        return Err(corrupt(
+            "Snapshot blob length changed",
+            json!({"file":file}),
+        ));
+    }
+    Ok(ResolvedProfile {
+        alias: matching.map_or_else(String::new, |(alias, _)| alias.to_owned()),
+        fingerprint: fingerprint.to_owned(),
+        path,
+        byte_len: metadata.len(),
+    })
 }
 
 pub(crate) fn resolve_with_status(

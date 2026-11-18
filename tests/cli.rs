@@ -32,9 +32,9 @@ fn manage_aliases() {
         .output()
         .unwrap();
     let listed = String::from_utf8(listed.stdout).unwrap();
-    assert!(listed.contains("active=candidate"));
+    assert!(listed.contains("active=baseline"));
     assert!(listed.contains("baseline"));
-    assert!(listed.contains("* candidate"));
+    assert!(listed.contains("* baseline"));
 
     let selected = Command::new(binary)
         .current_dir(workspace.path())

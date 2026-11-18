@@ -40,6 +40,10 @@ prof-mcp gc                                        # 只删除未被引用的 bl
 
 Profile 以原始字节存放在 `.prof-mcp/profiles/<blake3>.folded`，相同内容自动去重。最后一个别名不能删除。变更操作持有持久化的咨询锁，manifest 原子写入。生成的数据被 git 忽略，registry 内的小 `.gitignore` 保持可见。
 
+## 实验查询
+
+`prof-mcp serve --toolset experimental` 启用五工具界面。`profile_query` 支持按精确上下文选择栈、组合条件、切换视图和计算全量指标。`prof-mcp query --jsonl` 可从命令行执行相同请求。
+
 ## 工具
 
 共八个，顺序固定：
@@ -54,7 +58,7 @@ Profile 以原始字节存放在 `.prof-mcp/profiles/<blake3>.folded`，相同�
 | `profile_paths` | 经过某 frame 的最重完整栈 |
 | `profile_diff` | 比较两个别名（必须都显式给出） |
 
-单 profile 工具默认使用 active 别名。建议 agent 按以下顺序使用：
+首次注册设定 active 别名，后续注册保留现有选择。使用 `prof-mcp use NAME` 切换。单 profile 工具默认使用 active 别名。建议 agent 按以下顺序使用：
 
 1. `profile_summary`：确认别名、指纹、总权重。
 2. `profile_find_symbols`：获得精确名称或 frame ID（ID 只属于对应 profile）。
@@ -66,7 +70,7 @@ inclusive 权重高不等于优化收益；diff 也不证明因果或统计显�
 
 被截断的 tree / callers / callees 结果会返回 continuation。把返回的 `data.continuations[i].continuation` 原样复制到下一次请求的 `continuation` 字段，并省略 `profile` 和 `frame`。若别名已指向不同字节，需要不带 continuation 重新开始。不要自行拼装 cursor。
 
-`profile_paths` 的 `frame_window` 只裁剪显示，不改变路径选择和权重（示例见英文 README）。输入 schema 拒绝未知字段。响应的 schema 版本为 `"2"`，`truncated=true` 时一定带结构化的 `truncation_reasons`。
+`profile_paths` 的 `frame_window` 只裁剪显示，不改变路径选择和权重（示例见英文 README）。输入 schema 拒绝未知字段。默认八个工具的响应 schema 版本为 `"3"`，`truncated=true` 时一定带结构化的 `truncation_reasons`。
 
 客户端必须把成功响应的 `structuredContent` 暴露给 agent，其中包含完整证据；成功的文本 `content` 是最多 2048 字节的摘要。业务错误返回 `isError=true`，文本 `content` 包含完整 `ApiError` JSON，没有 `structuredContent`。已验证 Codex CLI 0.162.1 能暴露完整成功结果、续查信息和业务错误；Desktop 宿主尚未验证。
 
@@ -81,7 +85,7 @@ inclusive 权重高不等于优化收益；diff 也不证明因果或统计显�
 
 每行形如 `frame;frame weight`，权重为正整数；frame 是不透明且区分大小写的标识，权重无单位。
 
-`capture` 直接把命令交给 `perf record -g`（不经 shell），并在 Rust 中折叠 `perf script` 输出：保留完整函数签名与 `[module]` 后缀，只去掉末尾的 `+0xHEX` 偏移；未知符号记为 `[unknown@0xADDR]`；字面量 `% ; [ ]` 被百分号转义（`%25 %3B %5B %5D`），查询时请使用返回的编码名称。混合事件类型、格式错误、超限或 perf 失败都会使 capture 失败，且不影响已有别名。
+`capture` 直接把命令交给 `perf record -g`（不经 shell），并在 Rust 中折叠 `perf script` 输出：保留完整函数签名与 `[module]` 后缀，只去掉末尾的 `+0xHEX` 偏移；未知符号记为 `[unknown@0xADDR]`；旧导入器将百分号、分号、回车分别转义为 `%25`、`%3B`、`%0D`，保留原文字面方括号，查询时请使用返回的编码名称。混合事件类型、格式错误、超限或 perf 失败都会使 capture 失败，且不影响已有别名。
 
 ## 平台支持
 
@@ -89,7 +93,7 @@ Registry 操作目前需要 Unix；`capture` 另外需要 Linux。CI 仅验证 L
 
 ## 开发
 
-开发使用 `rust-toolchain.toml` 指定的 stable 工具链，最低支持 Rust 1.89，CI 同时测试两者。
+开发使用 `rust-toolchain.toml` 指定的 stable 工具链，最低支持 Rust 1.100，CI 同时测试两者。
 
 ```bash
 cargo build --locked --release

@@ -360,9 +360,15 @@ fn summary_names_are_opaque() {
         assert_eq!(data["top_self"][0]["name"], name);
         assert_eq!(data["top_self"][0]["self_weight"], 7);
         assert_eq!(summary["warnings"].as_array().unwrap().len(), 1);
-        assert_eq!(data["symbol_coverage"]["unresolved_frames"], 0);
+        assert_eq!(
+            data["symbol_coverage"]["unresolved_frames"],
+            usize::from(name == "[unknown]")
+        );
         assert_eq!(data["symbol_coverage"]["frame_count"], 2);
-        assert_eq!(data["symbol_coverage"]["unresolved_self_percent"], 0.0);
+        assert_eq!(
+            data["symbol_coverage"]["unresolved_self_percent"],
+            if name == "[unknown]" { 100.0 } else { 0.0 }
+        );
     }
 }
 

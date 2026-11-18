@@ -262,24 +262,16 @@ pub fn top_with_workspace<'p>(
 
 fn sparse_subset_stats(profile: &Profile, postings: &[u32]) -> HashMap<u32, (FrameStats, u32)> {
     let mut result = HashMap::new();
-    for posting in postings {
-        let stack_id = *posting;
+    for &stack_id in postings {
         let stack = profile.stacks.stack(stack_id);
-        for &frame in stack.frames {
-            let (stats, seen) = result
-                .entry(frame)
-                .or_insert((FrameStats::default(), u32::MAX));
-            if *seen != stack_id {
-                *seen = stack_id;
-                stats.inclusive_weight += stack.weight;
-                stats.stack_count += 1;
-            }
-        }
-        result
-            .get_mut(stack.frames.last().expect("non-empty stack"))
-            .unwrap()
-            .0
-            .self_weight += stack.weight;
+        super::engine::accumulate_sparse_stats(
+            &mut result,
+            stack_id,
+            stack.frames,
+            stack.weight,
+            usize::MAX,
+        )
+        .expect("legacy workspace is bounded by the profile model");
     }
     result
 }

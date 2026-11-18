@@ -132,3 +132,67 @@ async fn query_worker() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn cancelled_experimental_request_releases_the_query_gate() {
+    tokio::time::timeout(TIMEOUT, async {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("input.folded");
+        std::fs::write(&source, "root;leaf 1\n").unwrap();
+        crate::registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
+        let server = ProfileServer::new_in_workspace(
+            Config {
+                max_file_size_mib: 1,
+                max_cache_mib: 512,
+            },
+            workspace.path().to_owned(),
+        )
+        .unwrap()
+        .with_options(Toolset::Experimental, OutputFormat::Structured);
+        let (server_transport, client_transport) = tokio::io::duplex(65536);
+        let (ready, peer) = tokio::sync::oneshot::channel();
+        let service = server.clone();
+        let server_task = tokio::spawn(async move {
+            let running = service.serve(server_transport).await.unwrap();
+            ready.send(running.peer().clone()).unwrap();
+            running.waiting().await
+        });
+        let client = ().serve(client_transport).await.unwrap();
+
+        let context = RequestContext::new(rmcp::model::RequestId::Number(1), peer.await.unwrap());
+        let cancellation = context.ct.clone();
+        let permit = server.query_gate.acquire().await.unwrap();
+        let request = CallToolRequestParams::new("profile_query").with_arguments(
+            json!({"view":{"kind":"frames","stat":"self"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let mut call = Box::pin(server.call_tool(request, context));
+        std::future::poll_fn(|cx| {
+            assert!(call.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        cancellation.cancel();
+        drop(permit);
+        let CallToolResponse::Complete(cancelled) = call.await.unwrap() else {
+            panic!("cancelled query must return a terminal result");
+        };
+        assert_eq!(cancelled.is_error, Some(true));
+        let error: serde_json::Value =
+            serde_json::from_str(&cancelled.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(error["code"], "query_cancelled");
+        let following = client
+            .peer()
+            .call_tool(CallToolRequestParams::new("profile_summary"))
+            .await
+            .unwrap();
+        assert_eq!(following.is_error, Some(false));
+
+        client.cancel().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}

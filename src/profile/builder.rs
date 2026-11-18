@@ -241,8 +241,10 @@ impl ProfileBuilder {
             name_offsets: name_offsets.into_boxed_slice(),
         };
         let mut profile = Profile {
+            unknown_coverage: Default::default(),
             source: SourceMeta {
                 fingerprint: hasher.finalize().to_hex().to_string(),
+                snapshot_id: Default::default(),
             },
             total_weight,
             max_depth,
@@ -259,6 +261,7 @@ impl ProfileBuilder {
                 nodes: Box::new([]),
                 child_offsets: Box::new([]),
                 children: Box::new([]),
+                stack_ranges: Box::new([]),
             },
         };
         // Charges include per-frame scan scratch and the active prefix's spare capacity.

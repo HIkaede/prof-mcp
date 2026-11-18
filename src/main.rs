@@ -4,7 +4,7 @@ use prof_mcp::{
     capture,
     config::{Cli, Command, Config},
     registry,
-    server::run_stdio,
+    server::{run_jsonl, run_stdio_with_options},
     setup,
 };
 use tracing_subscriber::EnvFilter;
@@ -21,7 +21,16 @@ async fn main() -> Result<()> {
         .init();
     match cli.command {
         Some(Command::Setup { dry_run }) => setup::run(dry_run),
-        Some(Command::Serve { .. }) => run_stdio(config).await,
+        Some(Command::Serve {
+            toolset,
+            output_format,
+            ..
+        }) => run_stdio_with_options(config, toolset, output_format).await,
+        Some(Command::Query { .. }) => run_jsonl(config).await,
+        Some(Command::ImportSamples { input, output }) => {
+            capture::samples::import_perf(&input, &output, &config)
+        }
+        Some(Command::QuerySamples { input }) => query_samples(&input, &config),
         Some(Command::Register { profile, name }) => {
             let source = (profile != std::path::Path::new("-")).then_some(profile.as_path());
             let registration = capture::register_input(&config, source, name.as_deref())?;
@@ -92,6 +101,23 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn query_samples(input: &std::path::Path, config: &Config) -> Result<()> {
+    use std::io::Read;
+    const MAX_REQUEST_BYTES: usize = 64 * 1024;
+    let mut request = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take((MAX_REQUEST_BYTES + 1) as u64)
+        .read_to_end(&mut request)?;
+    anyhow::ensure!(
+        request.len() <= MAX_REQUEST_BYTES,
+        "Sample query exceeds its request byte limit"
+    );
+    let request = serde_json::from_slice(&request)?;
+    let result = capture::samples::query_file(input, request, config)?;
+    emit(format_args!("{}", serde_json::to_string(&result)?))
 }
 
 fn print_registration(registration: &registry::Registration) -> Result<()> {

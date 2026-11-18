@@ -13,6 +13,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::{config::Config, profile::BuildLimits, registry};
 
+pub mod samples;
+
 pub fn run(
     config: &Config,
     name: Option<&str>,
@@ -569,7 +571,7 @@ fn encode_frame(frame: &str) -> String {
     encoded
 }
 
-fn parse_stack_line(line: &str) -> Option<String> {
+fn parse_stack_location(line: &str) -> Option<(&str, &str, &str)> {
     let line = line.trim_start();
     if !line.ends_with(')') {
         return None;
@@ -623,22 +625,27 @@ fn parse_stack_line(line: &str) -> Option<String> {
     if pc.is_empty() || !pc.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
-    let mut function = raw.trim().to_owned();
+    let mut function = raw.trim();
     if let Some((symbol, offset)) = function.rsplit_once("+0x")
         && !offset.is_empty()
         && offset.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        function = symbol.to_owned();
+        function = symbol;
     }
     if function.is_empty() || module.is_empty() {
         return None;
     }
+    Some((pc, function, module))
+}
+
+fn parse_stack_line(line: &str) -> Option<String> {
+    let (pc, function, module) = parse_stack_location(line)?;
     // A symbol spelled exactly like this marker would merge with it; in practice
     // only the synthesized marker has this shape.
     let function = if function == "[unknown]" {
         format!("[unknown@0x{pc}]")
     } else {
-        encode_frame(&function)
+        encode_frame(function)
     };
     Some(format!("{function} [{}]", encode_frame(module)))
 }

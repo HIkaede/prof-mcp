@@ -164,7 +164,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.details["committed"], true);
-        let resolved = registry::resolve(root.path(), None).unwrap();
+        let resolved = registry::resolve(root.path(), Some("new")).unwrap();
         assert_eq!(resolved.alias, "new");
         assert_eq!(fs::read(resolved.path).unwrap(), b"root;new 2\n");
         assert_eq!(
@@ -198,7 +198,11 @@ mod tests {
         assert_eq!(fs::read(&blob).unwrap(), bytes);
         registry::register_reader(root.path(), &bytes[..], "new.folded", Some("new"), 1024)
             .unwrap();
-        assert_eq!(registry::resolve(root.path(), None).unwrap().alias, "new");
+        assert_eq!(
+            registry::resolve(root.path(), Some("new")).unwrap().alias,
+            "new"
+        );
+        assert_eq!(registry::resolve(root.path(), None).unwrap().alias, "old");
     }
 
     #[test]

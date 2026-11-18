@@ -45,12 +45,21 @@ prof-mcp gc                                        # deletes only unreferenced b
 
 Profiles are stored under `.prof-mcp/profiles/<blake3>.folded` as the exact input
 bytes, so identical inputs are deduplicated. The last alias cannot be removed.
-Mutations hold a persistent advisory lock, and manifest writes are atomic. The
+The first registration sets the active alias. Later registrations preserve it. Use
+`prof-mcp use NAME` to switch after registering. Mutations hold a persistent advisory lock, and manifest writes are atomic. The
 generated registry data is git-ignored, and its small `.gitignore` stays visible.
+
+## Experimental queries
+
+Start `prof-mcp serve --toolset experimental` to expose `profile_query` and
+`profile_explore` alongside summary, symbol lookup and diff. A query returns a
+snapshot-bound selection. Reuse it to switch between frames, contexts, direct
+children, paths and aggregate totals. `prof-mcp query --jsonl` runs the same
+handlers over one JSON request per line.
 
 ## Tools
 
-Eight tools, in this order:
+The default toolset has eight tools, in this order:
 
 | Tool | Purpose |
 | --- | --- |
@@ -89,7 +98,7 @@ selected or their weights:
 {"frame":{"frame_name":"foo"},"frame_window":{"mode":"around_target","before":5,"after":5}}
 ```
 
-Input schemas reject unknown fields. Responses use schema version `"2"`, and any
+Input schemas reject unknown fields. Responses use schema version `"3"`, and any
 `truncated=true` carries structured `truncation_reasons`.
 
 Clients must pass successful `structuredContent` to the agent. It holds the full
@@ -116,7 +125,7 @@ and case-sensitive. Weights are unitless (`weight_semantics`: `opaque`).
 `capture` passes your command straight to `perf record -g` (no shell) and folds
 `perf script` output in Rust. It keeps full signatures and `[module]` suffixes,
 and it drops only a trailing `+0xHEX` offset. Unknown symbols become
-`[unknown@0xADDR]`. Literal `% ; [ ]` are percent-escaped (`%25 %3B %5B %5D`),
+`[unknown@0xADDR]`. Literal percent, semicolon and carriage return are escaped as `%25`, `%3B` and `%0D`. The legacy formatter keeps brackets literal,
 so query the encoded names as returned. Mixed event types, malformed samples,
 limit violations and perf failures fail the capture without touching existing
 aliases.
@@ -129,7 +138,7 @@ Linux. CI validates Linux only, and other platforms are not verified.
 ## Development
 
 Development follows the stable toolchain from `rust-toolchain.toml`. The minimum
-supported Rust version is 1.89, and CI tests both.
+supported Rust version is 1.100, and CI tests both.
 
 ```bash
 cargo build --locked --release

@@ -108,6 +108,7 @@ async fn refresh_replaced_alias() {
     fs::write(&source, "root;old 1\n").unwrap();
     registry::register(workspace.path(), &source, Some("base"), 1024).unwrap();
     registry::register(workspace.path(), &source, Some("candidate"), 1024).unwrap();
+    registry::set_active(workspace.path(), "candidate").unwrap();
     let cache = ProfileCache::new(workspace.path().to_owned(), 1024, 2).unwrap();
     let base = cache.load(Some("base")).await.unwrap();
     let candidate = cache.load(None).await.unwrap();

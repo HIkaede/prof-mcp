@@ -93,6 +93,9 @@ pub struct SummaryData<'a> {
     pub max_depth: usize,
     pub stack_concentration: StackConcentration,
     pub symbol_coverage: SymbolCoverage,
+    pub capabilities: FoldedCapabilities,
+    pub quality: FoldedQuality,
+    pub snapshot_id: &'a str,
     pub recursion_detected: Vec<RecursionRow<'a>>,
     pub top_self: Vec<crate::output::FrameRow<'a>>,
     pub top_inclusive: Vec<crate::output::FrameRow<'a>>,
@@ -107,7 +110,31 @@ pub type SummaryOutput<'a> = OutputEnvelope<'a, SummaryData<'a>>;
 pub struct SymbolCoverage {
     pub unresolved_frames: usize,
     pub frame_count: usize,
+    pub unresolved_self_weight: u64,
     pub unresolved_self_percent: f64,
+    pub unresolved_stack_weight: u64,
+    pub unresolved_stack_percent: Option<f64>,
+}
+
+/// Facts recoverable from the registered folded bytes.
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+pub struct FoldedCapabilities {
+    pub storage: &'static str,
+    pub metric: &'static str,
+    pub retained_dimensions: &'static [&'static str],
+    pub queryable_dimensions: &'static [&'static str],
+    pub unavailable: &'static [&'static str],
+}
+
+/// Upstream collection metadata is absent from a generic folded artifact.
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+pub struct FoldedQuality {
+    pub lost_samples: Option<u64>,
+    pub lost_records: Option<u64>,
+    pub known_truncated_weight: Option<u64>,
+    pub unwind_failed_weight: Option<u64>,
+    pub source_dimensions: Option<&'static [&'static str]>,
+    pub discarded_dimensions: Option<&'static [&'static str]>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

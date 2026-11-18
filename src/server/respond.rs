@@ -5,6 +5,7 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 
+use crate::config::OutputFormat;
 use crate::error::ApiError;
 use crate::registry;
 
@@ -26,6 +27,61 @@ pub(crate) fn success(
     result.structured_content = Some(value);
     result.is_error = Some(false);
     bounded_result(result)
+}
+
+pub(crate) fn experimental_value(output: impl serde::Serialize) -> Result<Value, ApiError> {
+    ResponseBudget::new()
+        .json(&output)
+        .map_err(|_| experimental_too_large())?;
+    serialize(output)
+}
+
+pub(crate) fn experimental(
+    result: Result<Value, ApiError>,
+    format: OutputFormat,
+) -> CallToolResult {
+    let value = match result {
+        Ok(value) => value,
+        Err(error) => return failure(error),
+    };
+    let mut result = CallToolResult::default();
+    let content = match format {
+        OutputFormat::Structured => {
+            result.structured_content = Some(value);
+            "Query complete.".to_owned()
+        }
+        OutputFormat::Text => match serde_json::to_string(&value) {
+            Ok(text) => text,
+            Err(_) => return failure(ApiError::internal("Could not serialize typed tool output")),
+        },
+    };
+    result.content = vec![ContentBlock::text(content)];
+    result.is_error = Some(false);
+    if ResponseBudget::new().json(&result).is_err() {
+        return failure(experimental_too_large());
+    }
+    result
+}
+
+pub(crate) fn render_legacy(mut result: CallToolResult, format: OutputFormat) -> CallToolResult {
+    if format == OutputFormat::Text
+        && let Some(value) = result.structured_content.take()
+    {
+        match serde_json::to_string(&value) {
+            Ok(text) => result.content = vec![ContentBlock::text(text)],
+            Err(_) => return failure(ApiError::internal("Could not serialize typed tool output")),
+        }
+    }
+    bounded_result(result)
+}
+
+pub(crate) fn experimental_too_large() -> ApiError {
+    ApiError::new(
+        "result_too_large",
+        "Tool response exceeds its encoded byte limit",
+        serde_json::json!({"limit_bytes":crate::output::MAX_RESPONSE_BYTES}),
+        "Reduce the row or path display limit, or narrow the selection.",
+    )
 }
 pub(crate) fn tag_alias<'a, T>(value: &mut crate::output::OutputEnvelope<'a, T>, alias: &'a str) {
     value.profile.alias = alias;
@@ -151,6 +207,21 @@ mod text_tests {
                 "/text.folded".into(),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn experimental_text_obeys_the_encoded_wire_budget() {
+        let value = json!({"name":"\"".repeat(18 * 1024)});
+        let structured = experimental(Ok(value.clone()), OutputFormat::Structured);
+        assert_eq!(structured.is_error, Some(false));
+        assert!(serde_json::to_vec(&structured).unwrap().len() <= MAX_RESPONSE_BYTES);
+
+        let text = experimental(Ok(value), OutputFormat::Text);
+        assert_eq!(text.is_error, Some(true));
+        assert_eq!(
+            serde_json::from_str::<Value>(&text.content[0].as_text().unwrap().text).unwrap()["code"],
+            "result_too_large"
+        );
     }
 
     #[test]

@@ -180,7 +180,7 @@ fn main() -> anyhow::Result<()> {
             "stack_frames_bytes":memory.stack_frames_bytes,"stack_weights_bytes":memory.stack_weights_bytes,
             "frame_stats_bytes":memory.frame_stats_bytes,"posting_offsets_bytes":memory.posting_offsets_bytes,
             "posting_entries_bytes":memory.posting_entries_bytes,"posting_positions_bytes":memory.posting_positions_bytes,"cct_nodes_bytes":memory.cct_nodes_bytes,
-            "cct_offsets_bytes":memory.cct_offsets_bytes,"cct_edges_bytes":memory.cct_edges_bytes,
+            "cct_ranges_bytes":memory.cct_ranges_bytes,"cct_offsets_bytes":memory.cct_offsets_bytes,"cct_edges_bytes":memory.cct_edges_bytes,
             "top_rankings_bytes":memory.top_rankings_bytes,"recursion_bytes":memory.recursion_bytes,
             "metadata_bytes":memory.metadata_bytes,"total_bytes":memory.total_bytes
         }})
